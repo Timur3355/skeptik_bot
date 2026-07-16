@@ -50,13 +50,16 @@ def generate_post():
                 "content": (
                     "Ты — автор канала «Скептик с EBITDA». Твой стиль: дерзкий, саркастичный, "
                     "с конкретными цифрами из отчётов Ozon, Wildberries или Магнита. "
-                    "В конце каждого поста — чёткий Action Item. "
-                    "Используй HTML-разметку: <b>жирный</b>, <i>курсив</i>, заголовки. "
-                    "Отделяй описание для картинки тремя знаками равно: ===\n\n"
+                    "НЕ выводи внутренние рассуждения, теги <think>, пояснения — только готовый пост. "
+                    "Используй HTML-разметку: <b>жирный</b> для ключевых цифр и заголовков, <i>курсив</i> для акцентов. "
+                    "Обязательно используй эмодзи и разделители, чтобы текст был ярким и структурированным. "
+                    "Например: 📉 для падений, 💸 для убытков, ⚠️ для проблем, ✅ для Action Item, 🔥 для трендов. "
+                    "Разделяй смысловые блоки с помощью '—' или '⚡'.\n\n"
                     "Формат ответа:\n"
-                    "ТЕКСТ ПОСТА\n"
-                    "===\n"
-                    "ОПИСАНИЕ ДЛЯ КАРТИНКИ (на английском, кратко)"
+                    "1. Заголовок с эмодзи (например, '📉 <b>Российский ритейл: как сжечь миллиарды</b>')\n"
+                    "2. Основной текст с цифрами и сарказмом, разделённый на абзацы.\n"
+                    "3. Чёткий Action Item с ✅ в конце.\n"
+                    "4. После всего текста — три знака равно === и описание для картинки (на английском, кратко)."
                 )
             },
             {
@@ -126,42 +129,26 @@ def generate_image(prompt):
         return None
 
 def publish_to_telegram(text, image_path):
-    """
-    Отправляет фото с коротким анонсом (первые 200 символов)
-    и отдельное сообщение с полным текстом (в HTML-формате)
-    """
     try:
-        # Фото с короткой подписью (не более 200 символов)
-        short_text = text[:200] + "…" if len(text) > 200 else text
-        url_photo = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+        # Обрезаем до 950 символов, но сохраняем структуру
+        if len(text) > 950:
+            text = text[:950] + "... (продолжение следует)"
+            print(f"[WARN] Текст обрезан до {len(text)} символов")
+
+        print(f"[DEBUG] Длина caption: {len(text)} символов")
+
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         with open(image_path, "rb") as photo:
             files = {"photo": photo}
-            data_photo = {
+            data = {
                 "chat_id": TELEGRAM_CHAT_ID,
-                "caption": short_text,
-                "parse_mode": "HTML"
+                "caption": text,
+                "parse_mode": "HTML"  # Включаем форматирование
             }
-            response_photo = requests.post(url_photo, files=files, data=data_photo, timeout=30)
-            if response_photo.status_code != 200:
-                print(f"[ERROR] Ошибка отправки фото: {response_photo.text}")
-                return False
-
-        # Отдельное сообщение с полным текстом (форматирование HTML)
-        url_message = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        data_message = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True
-        }
-        response_message = requests.post(url_message, json=data_message, timeout=30)
-        if response_message.status_code != 200:
-            print(f"[ERROR] Ошибка отправки текста: {response_message.text}")
-            return False
-
-        print("[INFO] Фото и текст успешно отправлены")
-        return True
-
+            response = requests.post(url, files=files, data=data, timeout=30)
+        if response.status_code != 200:
+            print(f"[ERROR] Telegram ответ: {response.text}")
+        return response.status_code == 200
     except Exception as e:
         print(f"[ERROR] Ошибка публикации: {e}")
         return False
