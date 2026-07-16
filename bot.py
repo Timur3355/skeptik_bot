@@ -20,8 +20,10 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 API_PROVIDER = os.getenv("API_PROVIDER", "openai").lower()
-MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-r1")
+# Меняем модель на deepseek-v3 (она не выдаёт think)
+MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-v3")
 
+# Список тем для разнообразия
 TOPICS = [
     "логистические провалы Ozon: затраты, сроки доставки, убытки",
     "штрафы и возвраты Wildberries: как компания зарабатывает на продавцах",
@@ -34,7 +36,7 @@ TOPICS = [
 PROVIDER_CONFIG = {
     "openai": {
         "url": "https://api.chatanywhere.tech/v1/chat/completions",
-        "default_model": "deepseek-r1",
+        "default_model": "deepseek-v3",
         "headers": lambda key: {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {key}"
@@ -49,37 +51,18 @@ API_DEFAULT_MODEL = config["default_model"]
 if not MODEL_NAME:
     MODEL_NAME = API_DEFAULT_MODEL
 
-# ======================== ФУНКЦИИ =========================
-
-def clean_think_tags(text):
-    """Удаляет все теги <think>...</think> и их содержимое"""
+# ======================== ФУНКЦИЯ ОЧИСТКИ =========================
+def clean_text(text):
+    """Удаляет внутренние рассуждения (think) и лишние пробелы"""
+    # Удаляем всё между <think> и </think> (включая сами теги)
     text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-    text = re.sub(r'</?think>', '', text)
+    # Удаляем возможные остатки тегов без закрытия
+    text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
+    # Убираем лишние пустые строки
+    text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
-def remove_all_html(text):
-    """Удаляет все HTML-теги из текста"""
-    return re.sub(r'<[^>]+>', '', text)
-
-def extract_post_and_prompt(full_text):
-    """Извлекает текст поста и промпт для картинки"""
-    cleaned = clean_think_tags(full_text)
-    # Удаляем все HTML-теги, чтобы не было проблем с парсингом
-    cleaned = remove_all_html(cleaned)
-    
-    if '===' in cleaned:
-        parts = cleaned.split('===', 1)
-        post_text = parts[0].strip()
-        image_prompt = parts[1].strip() if len(parts) > 1 else ''
-    else:
-        post_text = cleaned.strip()
-        image_prompt = ''
-    
-    if len(image_prompt) < 5:
-        image_prompt = "business finance sarcastic illustration"
-        print("[WARN] Промпт для картинки был пуст, использован стандартный")
-    
-    return post_text, image_prompt
+# ======================== ФУНКЦИИ ГЕНЕРАЦИИ =========================
 
 def generate_post():
     topic = random.choice(TOPICS)
@@ -94,9 +77,9 @@ def generate_post():
                 "content": (
                     "Ты — автор канала «Скептик с EBITDA».\n"
                     "Стиль: дерзкий, саркастичный, с конкретными цифрами из отчётности.\n"
-                    "НЕ выводи <think>, рассуждения — только готовый пост.\n"
+                    "НЕ выводи никаких внутренних рассуждений, тегов <think>, пояснений — только готовый пост.\n"
                     "Пост должен быть не длиннее 600 символов (4–5 коротких абзацев).\n"
-                    "НЕ используй HTML-теги, только обычный текст с эмодзи.\n"
+                    "Используй HTML: <b>жирный</b> для ключевых цифр и заголовка.\n"
                     "Каждый абзац начинай с эмодзи (📦, 💰, 📊, ⚠️, 🔥, 📉).\n"
                     "НЕ используй разделители — только пустые строки между абзацами.\n"
                     "В конце — чёткий Action Item с ✅ (одно предложение).\n"
@@ -109,7 +92,7 @@ def generate_post():
             }
         ],
         "temperature": 0.85,
-        "max_tokens": 450
+        "max_tokens": 500  # чуть больше, чтобы хватило на полный текст
     }
 
     print(f"[DEBUG] Provider: {API_PROVIDER}, Model: {MODEL_NAME}")
@@ -134,7 +117,21 @@ def generate_post():
         if not full_text:
             raise Exception("Пустой ответ от API")
 
-        post_text, image_prompt = extract_post_and_prompt(full_text)
+        # Очищаем от think-блоков
+        full_text = clean_text(full_text)
+
+        if "===" in full_text:
+            parts = full_text.split("===", 1)
+            post_text = parts[0].strip()
+            image_prompt = parts[1].strip() if len(parts) > 1 else ""
+        else:
+            post_text = full_text.strip()
+            image_prompt = ""
+
+        if len(image_prompt) < 10:
+            image_prompt = "business finance sarcastic illustration"
+            print("[WARN] Промпт для картинки был пуст, использован стандартный")
+
         return post_text, image_prompt
 
     except Exception as e:
@@ -160,11 +157,6 @@ def generate_image(prompt):
 
 def publish_to_telegram(text, image_path):
     try:
-        # Повторная очистка от HTML на всякий случай
-        text = remove_all_html(text)
-        text = text.strip()
-
-        # Обрезаем до 650 символов
         if len(text) > 650:
             text = text[:650] + "… Читать далее в канале."
             print(f"[WARN] Текст обрезан до {len(text)} символов")
@@ -176,8 +168,8 @@ def publish_to_telegram(text, image_path):
             files = {"photo": photo}
             data = {
                 "chat_id": TELEGRAM_CHAT_ID,
-                "caption": text
-                # parse_mode не указываем, чтобы не было ошибок парсинга
+                "caption": text,
+                "parse_mode": "HTML"
             }
             response = requests.post(url, files=files, data=data, timeout=30)
         if response.status_code != 200:
