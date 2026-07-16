@@ -108,8 +108,7 @@ threading.Thread(target=start_health_server, daemon=True).start()
 
 # ========== САМОПИНГ (чтобы бот не засыпал на Render) ==========
 def keep_alive():
-    # Замените ВАШ_САЙТ на фактический URL после деплоя
-    url = "https://skeptik-bot.onrender.com"
+    url = "https://skeptik-bot.onrender.com"  # Уже подставлен ваш URL
     while True:
         try:
             urllib.request.urlopen(url)
