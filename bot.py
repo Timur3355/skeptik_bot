@@ -19,7 +19,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # По умолчанию используем openai (совместим с chatanywhere)
 API_PROVIDER = os.getenv("API_PROVIDER", "openai").lower()
-MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-v3")  # или deepseek-r1
+MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-r1")  # или deepseek-v3, gpt-4o-mini
 
 # Настройки для разных провайдеров
 PROVIDER_CONFIG = {
@@ -50,9 +50,9 @@ PROVIDER_CONFIG = {
         }
     },
     "openai": {
-        # Используем бесплатный прокси от chatanywhere.tech
+        # Бесплатный прокси от chatanywhere.tech
         "url": "https://api.chatanywhere.tech/v1/chat/completions",
-        "default_model": "deepseek-v3",  # или deepseek-r1
+        "default_model": "deepseek-r1",  # доступно: deepseek-v3, gpt-4o-mini
         "headers": lambda key: {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {key}"
@@ -66,7 +66,6 @@ API_URL = config["url"]
 API_HEADERS_FUNC = config["headers"]
 API_DEFAULT_MODEL = config["default_model"]
 
-# Если модель не задана в окружении, используем дефолтную
 if not MODEL_NAME:
     MODEL_NAME = API_DEFAULT_MODEL
 
@@ -197,19 +196,30 @@ class HealthHandler(BaseHTTPRequestHandler):
                 output = sys.stdout.getvalue()
                 self.send_response(200)
                 self.end_headers()
-                self.wfile.write(f"✅ Успешно!\n\n{output}".encode())
+                # Обработка BrokenPipeError
+                try:
+                    self.wfile.write(f"✅ Успешно!\n\n{output}".encode())
+                except BrokenPipeError:
+                    # Клиент закрыл соединение — игнорируем
+                    pass
             except Exception as e:
                 output = sys.stdout.getvalue()
                 error_text = traceback.format_exc()
                 self.send_response(500)
                 self.end_headers()
-                self.wfile.write(f"❌ ОШИБКА: {str(e)}\n\n{output}\n\nСТЕК:\n{error_text}".encode())
+                try:
+                    self.wfile.write(f"❌ ОШИБКА: {str(e)}\n\n{output}\n\nСТЕК:\n{error_text}".encode())
+                except BrokenPipeError:
+                    pass
             finally:
                 sys.stdout = old_stdout
         else:
             self.send_response(200)
             self.end_headers()
-            self.wfile.write(b"OK")
+            try:
+                self.wfile.write(b"OK")
+            except BrokenPipeError:
+                pass
 
 def start_health_server():
     port = int(os.environ.get("PORT", 10000))
