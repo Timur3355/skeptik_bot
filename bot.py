@@ -12,6 +12,7 @@ import io
 import traceback
 import json
 import random
+import re
 
 # ======================== КОНФИГУРАЦИЯ =========================
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
@@ -21,7 +22,6 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 API_PROVIDER = os.getenv("API_PROVIDER", "openai").lower()
 MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-r1")
 
-# Список тем для разнообразия
 TOPICS = [
     "логистические провалы Ozon: затраты, сроки доставки, убытки",
     "штрафы и возвраты Wildberries: как компания зарабатывает на продавцах",
@@ -51,8 +51,33 @@ if not MODEL_NAME:
 
 # ======================== ФУНКЦИИ =========================
 
+def clean_think_tags(text):
+    """Удаляет все теги <think>...</think> и их содержимое"""
+    return re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+
+def extract_post_and_prompt(full_text):
+    """Извлекает текст поста и промпт для картинки, даже если нет ==="""
+    # Сначала удаляем think-теги
+    cleaned = clean_think_tags(full_text)
+    
+    # Пытаемся разделить по ===
+    if '===' in cleaned:
+        parts = cleaned.split('===', 1)
+        post_text = parts[0].strip()
+        image_prompt = parts[1].strip() if len(parts) > 1 else ''
+    else:
+        # Если разделитель отсутствует, используем весь текст как пост
+        post_text = cleaned.strip()
+        image_prompt = ''
+    
+    # Если промпт пуст или слишком короткий — ставим дефолтный
+    if len(image_prompt) < 5:
+        image_prompt = "business finance sarcastic illustration"
+        print("[WARN] Промпт для картинки был пуст, использован стандартный")
+    
+    return post_text, image_prompt
+
 def generate_post():
-    # Выбираем случайную тему
     topic = random.choice(TOPICS)
     print(f"[DEBUG] Выбрана тема: {topic}")
 
@@ -105,18 +130,8 @@ def generate_post():
         if not full_text:
             raise Exception("Пустой ответ от API")
 
-        if "===" in full_text:
-            parts = full_text.split("===", 1)
-            post_text = parts[0].strip()
-            image_prompt = parts[1].strip() if len(parts) > 1 else ""
-        else:
-            post_text = full_text.strip()
-            image_prompt = ""
-
-        if len(image_prompt) < 10:
-            image_prompt = "business finance sarcastic illustration"
-            print("[WARN] Промпт для картинки был пуст, использован стандартный")
-
+        # Пост-обработка
+        post_text, image_prompt = extract_post_and_prompt(full_text)
         return post_text, image_prompt
 
     except Exception as e:
@@ -142,19 +157,24 @@ def generate_image(prompt):
 
 def publish_to_telegram(text, image_path):
     try:
-        # Обрезаем до 650 символов, чтобы гарантированно вписаться в лимит 1024
-        if len(text) > 650:
-            text = text[:650] + "… Читать далее в канале."
-            print(f"[WARN] Текст обрезан до {len(text)} символов")
+        # Удаляем все невалидные HTML-теги, кроме разрешённых
+        allowed_tags = ['b', 'i', 'u', 's', 'a', 'code', 'pre']
+        # Просто заменяем все потенциально опасные теги на пустоту
+        # но оставляем <b> и <i> (мы используем только их)
+        clean_text = re.sub(r'<(?!\/?(b|i|u|s|a|code|pre)\b)[^>]+>', '', text)
+        # Обрезаем до 650 символов
+        if len(clean_text) > 650:
+            clean_text = clean_text[:650] + "… Читать далее в канале."
+            print(f"[WARN] Текст обрезан до {len(clean_text)} символов")
 
-        print(f"[DEBUG] Длина caption: {len(text)} символов")
+        print(f"[DEBUG] Длина caption: {len(clean_text)} символов")
 
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         with open(image_path, "rb") as photo:
             files = {"photo": photo}
             data = {
                 "chat_id": TELEGRAM_CHAT_ID,
-                "caption": text,
+                "caption": clean_text,
                 "parse_mode": "HTML"
             }
             response = requests.post(url, files=files, data=data, timeout=30)
