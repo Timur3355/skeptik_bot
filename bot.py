@@ -5,6 +5,7 @@ from datetime import datetime
 import os
 import threading
 import urllib.request
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ========== ВСЕ КЛЮЧИ БЕРУТСЯ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ==========
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
@@ -89,9 +90,26 @@ def job():
     else:
         print(f"[{datetime.now()}] ❌ Ошибка публикации")
 
+# ========== ВЕБ-СЕРВЕР ДЛЯ RENDER (чтобы открыть порт) ==========
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+def start_health_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    server.serve_forever()
+
+# Запускаем health-сервер в отдельном потоке
+threading.Thread(target=start_health_server, daemon=True).start()
+# ================================================================
+
 # ========== САМОПИНГ (чтобы бот не засыпал на Render) ==========
 def keep_alive():
-    url = "https://ВАШ_САЙТ.onrender.com"  # ЗАМЕНИТЕ ПОСЛЕ ДЕПЛОЯ
+    # Замените ВАШ_САЙТ на фактический URL после деплоя
+    url = "https://ВАШ_САЙТ.onrender.com"
     while True:
         try:
             urllib.request.urlopen(url)
