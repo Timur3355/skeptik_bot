@@ -5,6 +5,7 @@ from datetime import datetime
 import os
 import threading
 import urllib.request
+import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import sys
 import io
@@ -12,67 +13,35 @@ import traceback
 import json
 
 # ======================== КОНФИГУРАЦИЯ =========================
-# Читаем переменные окружения
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# По умолчанию используем openai (совместим с chatanywhere)
 API_PROVIDER = os.getenv("API_PROVIDER", "openai").lower()
-MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-r1")  # или deepseek-v3, gpt-4o-mini
+MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-r1")
 
-# Настройки для разных провайдеров
 PROVIDER_CONFIG = {
-    "siliconflow": {
-        "url": "https://api.siliconflow.cn/v1/chat/completions",
-        "default_model": "deepseek-ai/DeepSeek-V3",
-        "headers": lambda key: {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}"
-        }
-    },
-    "deepseek": {
-        "url": "https://api.deepseek.com/chat/completions",
-        "default_model": "deepseek-chat",
-        "headers": lambda key: {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}"
-        }
-    },
-    "openrouter": {
-        "url": "https://openrouter.ai/api/v1/chat/completions",
-        "default_model": "deepseek/deepseek-chat:free",
-        "headers": lambda key: {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}",
-            "HTTP-Referer": "https://skeptik-bot.onrender.com",
-            "X-Title": "Скептик с EBITDA"
-        }
-    },
     "openai": {
-        # Бесплатный прокси от chatanywhere.tech
         "url": "https://api.chatanywhere.tech/v1/chat/completions",
-        "default_model": "deepseek-r1",  # доступно: deepseek-v3, gpt-4o-mini
+        "default_model": "deepseek-r1",
         "headers": lambda key: {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {key}"
         }
-    }
+    },
+    # остальные провайдеры можно добавить при необходимости
 }
 
-# Выбираем конфиг текущего провайдера
 config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["openai"])
 API_URL = config["url"]
 API_HEADERS_FUNC = config["headers"]
 API_DEFAULT_MODEL = config["default_model"]
-
 if not MODEL_NAME:
     MODEL_NAME = API_DEFAULT_MODEL
 
-# ======================== ФУНКЦИИ ГЕНЕРАЦИИ =========================
+# ======================== ФУНКЦИИ =========================
 
 def generate_post():
-    """Запрос к API провайдера с полной диагностикой"""
     headers = API_HEADERS_FUNC(DEEPSEEK_API_KEY)
     payload = {
         "model": MODEL_NAME,
@@ -121,23 +90,33 @@ def generate_post():
         if not full_text:
             raise Exception("Пустой ответ от API")
 
+        # Пытаемся разделить текст и промпт
         if "===" in full_text:
-            post_text, image_prompt = full_text.split("===", 1)
+            parts = full_text.split("===", 1)
+            post_text = parts[0].strip()
+            image_prompt = parts[1].strip() if len(parts) > 1 else ""
         else:
-            post_text = full_text
+            post_text = full_text.strip()
+            image_prompt = ""
+
+        # Если промпт пустой или слишком короткий — используем дефолтный
+        if len(image_prompt) < 10:
             image_prompt = "business finance sarcastic illustration"
+            print("[WARN] Промпт для картинки был пуст, использован стандартный")
 
-        return post_text.strip(), image_prompt.strip()
+        return post_text, image_prompt
 
-    except requests.exceptions.RequestException as e:
-        raise Exception(f"Сетевая ошибка: {e}")
     except Exception as e:
         raise Exception(f"Ошибка при обработке ответа: {e}")
 
 def generate_image(prompt):
-    """Генерация картинки через Pollinations.ai (бесплатно)"""
+    """Генерация картинки через Pollinations.ai с URL-кодированием"""
     try:
-        url = f"https://image.pollinations.ai/prompt/{prompt}?width=1200&height=800"
+        # Кодируем промпт для безопасной вставки в URL
+        encoded_prompt = urllib.parse.quote(prompt)
+        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1200&height=800"
+        print(f"[DEBUG] Pollinations URL: {url}")
+
         response = requests.get(url, timeout=30)
         if response.status_code == 200:
             with open("temp_image.jpg", "wb") as f:
@@ -151,7 +130,6 @@ def generate_image(prompt):
         return None
 
 def publish_to_telegram(text, image_path):
-    """Публикация поста в канал"""
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         with open(image_path, "rb") as photo:
@@ -166,7 +144,6 @@ def publish_to_telegram(text, image_path):
         return False
 
 def job():
-    """Главная задача – генерация и публикация"""
     print(f"[{datetime.now()}] Генерация поста...")
     try:
         post_text, image_prompt = generate_post()
@@ -184,7 +161,7 @@ def job():
         print(f"[{datetime.now()}] ❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
         traceback.print_exc()
 
-# ======================== ВЕБ-СЕРВЕР ДЛЯ RENDER =========================
+# ======================== ВЕБ-СЕРВЕР =========================
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -196,11 +173,9 @@ class HealthHandler(BaseHTTPRequestHandler):
                 output = sys.stdout.getvalue()
                 self.send_response(200)
                 self.end_headers()
-                # Обработка BrokenPipeError
                 try:
                     self.wfile.write(f"✅ Успешно!\n\n{output}".encode())
                 except BrokenPipeError:
-                    # Клиент закрыл соединение — игнорируем
                     pass
             except Exception as e:
                 output = sys.stdout.getvalue()
@@ -228,7 +203,7 @@ def start_health_server():
 
 threading.Thread(target=start_health_server, daemon=True).start()
 
-# ======================== САМОПИНГ (не даёт уснуть) =========================
+# ======================== САМОПИНГ =========================
 
 def keep_alive():
     url = "https://skeptik-bot.onrender.com"
@@ -238,11 +213,11 @@ def keep_alive():
             print("[keep-alive] Пинг успешен")
         except Exception as e:
             print(f"[keep-alive] Ошибка пинга: {e}")
-        time.sleep(600)  # каждые 10 минут
+        time.sleep(600)
 
 threading.Thread(target=keep_alive, daemon=True).start()
 
-# ======================== РАСПИСАНИЕ ПУБЛИКАЦИЙ =========================
+# ======================== РАСПИСАНИЕ =========================
 
 schedule.every().day.at("10:00").do(job)
 
