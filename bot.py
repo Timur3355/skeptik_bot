@@ -53,15 +53,19 @@ if not MODEL_NAME:
 
 def clean_think_tags(text):
     """Удаляет все теги <think>...</think> и их содержимое"""
-    # Удаляем многострочные блоки
     text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-    # Удаляем одиночные теги <think> и </think>
     text = re.sub(r'</?think>', '', text)
     return text.strip()
 
+def remove_all_html(text):
+    """Удаляет все HTML-теги из текста"""
+    return re.sub(r'<[^>]+>', '', text)
+
 def extract_post_and_prompt(full_text):
-    """Извлекает текст поста и промпт для картинки, даже если нет ==="""
+    """Извлекает текст поста и промпт для картинки"""
     cleaned = clean_think_tags(full_text)
+    # Удаляем все HTML-теги, чтобы не было проблем с парсингом
+    cleaned = remove_all_html(cleaned)
     
     if '===' in cleaned:
         parts = cleaned.split('===', 1)
@@ -92,7 +96,7 @@ def generate_post():
                     "Стиль: дерзкий, саркастичный, с конкретными цифрами из отчётности.\n"
                     "НЕ выводи <think>, рассуждения — только готовый пост.\n"
                     "Пост должен быть не длиннее 600 символов (4–5 коротких абзацев).\n"
-                    "Используй HTML: <b>жирный</b> для ключевых цифр и заголовка.\n"
+                    "НЕ используй HTML-теги, только обычный текст с эмодзи.\n"
                     "Каждый абзац начинай с эмодзи (📦, 💰, 📊, ⚠️, 🔥, 📉).\n"
                     "НЕ используй разделители — только пустые строки между абзацами.\n"
                     "В конце — чёткий Action Item с ✅ (одно предложение).\n"
@@ -156,16 +160,9 @@ def generate_image(prompt):
 
 def publish_to_telegram(text, image_path):
     try:
-        # ГАРАНТИРОВАННАЯ ОЧИСТКА ОТ ТЕГОВ <think> (повторная страховка)
-        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-        text = re.sub(r'</?think>', '', text)
+        # Повторная очистка от HTML на всякий случай
+        text = remove_all_html(text)
         text = text.strip()
-
-        # Удаляем все неразрешённые HTML-теги, оставляем только <b> и <i>
-        # Просто заменяем все теги, кроме разрешённых, на пустоту
-        allowed_tags = ['b', 'i', 'u', 's', 'a', 'code', 'pre']
-        # Заменяем все теги, которые не входят в разрешённые
-        text = re.sub(r'<(?!\/?(?:' + '|'.join(allowed_tags) + r')\b)[^>]+>', '', text)
 
         # Обрезаем до 650 символов
         if len(text) > 650:
@@ -179,8 +176,8 @@ def publish_to_telegram(text, image_path):
             files = {"photo": photo}
             data = {
                 "chat_id": TELEGRAM_CHAT_ID,
-                "caption": text,
-                "parse_mode": "HTML"
+                "caption": text
+                # parse_mode не указываем, чтобы не было ошибок парсинга
             }
             response = requests.post(url, files=files, data=data, timeout=30)
         if response.status_code != 200:
