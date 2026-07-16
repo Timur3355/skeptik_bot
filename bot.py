@@ -58,8 +58,7 @@ def clean_text(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
-# ======================== ФУНКЦИИ ГЕНЕРАЦИИ =========================
-
+# ======================== ГЕНЕРАЦИЯ ПОСТА С ПОВТОРАМИ =========================
 def generate_post():
     topic = random.choice(TOPICS)
     print(f"[DEBUG] Выбрана тема: {topic}")
@@ -88,54 +87,63 @@ def generate_post():
             }
         ],
         "temperature": 0.85,
-        "max_tokens": 500
+        "max_tokens": 400
     }
 
     print(f"[DEBUG] Provider: {API_PROVIDER}, Model: {MODEL_NAME}")
     print(f"[DEBUG] URL: {API_URL}")
 
-    try:
-        response = requests.post(API_URL, headers=headers, json=payload, timeout=30)
-        status = response.status_code
-        response_text = response.text
+    # Повторяем запрос до 3 раз с задержкой
+    for attempt in range(3):
+        try:
+            response = requests.post(API_URL, headers=headers, json=payload, timeout=60)
+            status = response.status_code
+            response_text = response.text
 
-        print(f"[DEBUG] Status: {status}")
-        print(f"[DEBUG] Response (first 500 chars): {response_text[:500]}")
+            print(f"[DEBUG] Status: {status}")
+            print(f"[DEBUG] Response (first 500 chars): {response_text[:500]}")
 
-        if status != 200:
-            raise Exception(f"API вернул {status}: {response_text}")
+            if status != 200:
+                raise Exception(f"API вернул {status}: {response_text}")
 
-        data = response.json()
-        if "choices" not in data or not data["choices"]:
-            raise Exception(f"Ответ не содержит 'choices': {data}")
+            data = response.json()
+            if "choices" not in data or not data["choices"]:
+                raise Exception(f"Ответ не содержит 'choices': {data}")
 
-        full_text = data["choices"][0]["message"]["content"]
-        if not full_text:
-            raise Exception("Пустой ответ от API")
+            full_text = data["choices"][0]["message"]["content"]
+            if not full_text:
+                raise Exception("Пустой ответ от API")
 
-        full_text = clean_text(full_text)
+            full_text = clean_text(full_text)
 
-        if "===" in full_text:
-            parts = full_text.split("===", 1)
-            post_text = parts[0].strip()
-            image_prompt = parts[1].strip() if len(parts) > 1 else ""
-        else:
-            post_text = full_text.strip()
-            image_prompt = ""
+            if "===" in full_text:
+                parts = full_text.split("===", 1)
+                post_text = parts[0].strip()
+                image_prompt = parts[1].strip() if len(parts) > 1 else ""
+            else:
+                post_text = full_text.strip()
+                image_prompt = ""
 
-        if len(image_prompt) < 10:
-            image_prompt = "business finance sarcastic illustration"
-            print("[WARN] Промпт для картинки был пуст, использован стандартный")
+            if len(image_prompt) < 10:
+                image_prompt = "business finance sarcastic illustration"
+                print("[WARN] Промпт для картинки был пуст, использован стандартный")
 
-        return post_text, image_prompt
+            return post_text, image_prompt
 
-    except Exception as e:
-        raise Exception(f"Ошибка при обработке ответа: {e}")
+        except requests.exceptions.Timeout:
+            print(f"[WARN] Попытка {attempt+1} из 3: таймаут, повтор через 5 секунд...")
+            time.sleep(5)
+        except Exception as e:
+            print(f"[ERROR] Ошибка на попытке {attempt+1}: {e}")
+            if attempt == 2:
+                raise
+            time.sleep(3)
+
+    raise Exception("Не удалось получить ответ от API после 3 попыток")
 
 # ======================== ГЕНЕРАЦИЯ КАРТИНКИ (С УНИКАЛЬНЫМ СУФФИКСОМ) =========================
 def generate_image(prompt):
     try:
-        # Добавляем случайный суффикс, чтобы избежать кеширования и повторов
         unique_suffix = f" {random.randint(1, 100000)}"
         full_prompt = prompt + unique_suffix
         encoded_prompt = urllib.parse.quote(full_prompt)
@@ -157,7 +165,6 @@ def generate_image(prompt):
 # ======================== ПУБЛИКАЦИЯ В TELEGRAM =========================
 def publish_to_telegram(text, image_path):
     try:
-        # Обрезаем до 850 символов (безопасно для Telegram)
         if len(text) > 850:
             text = text[:850] + "… Читать далее в канале."
             print(f"[WARN] Текст обрезан до {len(text)} символов")
