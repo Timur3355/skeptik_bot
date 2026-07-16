@@ -17,10 +17,9 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# Какой провайдер использовать (siliconflow, deepseek, openrouter, openai)
-API_PROVIDER = os.getenv("API_PROVIDER", "siliconflow").lower()
-# Модель для выбранного провайдера (можно переопределить)
-MODEL_NAME = os.getenv("MODEL_NAME", "")
+# По умолчанию используем openai (совместим с chatanywhere)
+API_PROVIDER = os.getenv("API_PROVIDER", "openai").lower()
+MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-v3")  # или deepseek-r1
 
 # Настройки для разных провайдеров
 PROVIDER_CONFIG = {
@@ -51,8 +50,9 @@ PROVIDER_CONFIG = {
         }
     },
     "openai": {
-        "url": "https://api.openai.com/v1/chat/completions",
-        "default_model": "gpt-4o-mini",
+        # Используем бесплатный прокси от chatanywhere.tech
+        "url": "https://api.chatanywhere.tech/v1/chat/completions",
+        "default_model": "deepseek-v3",  # или deepseek-r1
         "headers": lambda key: {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {key}"
@@ -61,7 +61,7 @@ PROVIDER_CONFIG = {
 }
 
 # Выбираем конфиг текущего провайдера
-config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["siliconflow"])
+config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["openai"])
 API_URL = config["url"]
 API_HEADERS_FUNC = config["headers"]
 API_DEFAULT_MODEL = config["default_model"]
@@ -100,10 +100,8 @@ def generate_post():
         "max_tokens": 1000
     }
 
-    # Логируем запрос (без ключа)
     print(f"[DEBUG] Provider: {API_PROVIDER}, Model: {MODEL_NAME}")
     print(f"[DEBUG] URL: {API_URL}")
-    print(f"[DEBUG] Payload: {json.dumps(payload, ensure_ascii=False)[:200]}...")
 
     try:
         response = requests.post(API_URL, headers=headers, json=payload, timeout=30)
@@ -192,7 +190,6 @@ def job():
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/test':
-            # Перехватываем stdout для диагностики
             old_stdout = sys.stdout
             sys.stdout = io.StringIO()
             try:
