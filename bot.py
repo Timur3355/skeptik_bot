@@ -126,10 +126,13 @@ def generate_image(prompt):
 
 def publish_to_telegram(text, image_path):
     try:
-        # Обрезаем текст до 1020 символов (оставляем запас)
-        if len(text) > 1020:
-            text = text[:1020] + "... (продолжение в следующем посте)"
-            print("[WARN] Текст обрезан до 1020 символов")
+        # Обрезаем до 990 символов, чтобы гарантированно вписаться в лимит 1024
+        if len(text) > 990:
+            text = text[:990] + "... (продолжение в следующем посте)"
+            print("[WARN] Текст обрезан до 990 символов")
+        # Дополнительная страховка
+        if len(text) > 1024:
+            text = text[:1020] + "..."
 
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         with open(image_path, "rb") as photo:
