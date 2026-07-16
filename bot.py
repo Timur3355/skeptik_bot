@@ -53,24 +53,24 @@ if not MODEL_NAME:
 
 def clean_think_tags(text):
     """Удаляет все теги <think>...</think> и их содержимое"""
-    return re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+    # Удаляем многострочные блоки
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+    # Удаляем одиночные теги <think> и </think>
+    text = re.sub(r'</?think>', '', text)
+    return text.strip()
 
 def extract_post_and_prompt(full_text):
     """Извлекает текст поста и промпт для картинки, даже если нет ==="""
-    # Сначала удаляем think-теги
     cleaned = clean_think_tags(full_text)
     
-    # Пытаемся разделить по ===
     if '===' in cleaned:
         parts = cleaned.split('===', 1)
         post_text = parts[0].strip()
         image_prompt = parts[1].strip() if len(parts) > 1 else ''
     else:
-        # Если разделитель отсутствует, используем весь текст как пост
         post_text = cleaned.strip()
         image_prompt = ''
     
-    # Если промпт пуст или слишком короткий — ставим дефолтный
     if len(image_prompt) < 5:
         image_prompt = "business finance sarcastic illustration"
         print("[WARN] Промпт для картинки был пуст, использован стандартный")
@@ -130,7 +130,6 @@ def generate_post():
         if not full_text:
             raise Exception("Пустой ответ от API")
 
-        # Пост-обработка
         post_text, image_prompt = extract_post_and_prompt(full_text)
         return post_text, image_prompt
 
@@ -157,24 +156,30 @@ def generate_image(prompt):
 
 def publish_to_telegram(text, image_path):
     try:
-        # Удаляем все невалидные HTML-теги, кроме разрешённых
-        allowed_tags = ['b', 'i', 'u', 's', 'a', 'code', 'pre']
-        # Просто заменяем все потенциально опасные теги на пустоту
-        # но оставляем <b> и <i> (мы используем только их)
-        clean_text = re.sub(r'<(?!\/?(b|i|u|s|a|code|pre)\b)[^>]+>', '', text)
-        # Обрезаем до 650 символов
-        if len(clean_text) > 650:
-            clean_text = clean_text[:650] + "… Читать далее в канале."
-            print(f"[WARN] Текст обрезан до {len(clean_text)} символов")
+        # ГАРАНТИРОВАННАЯ ОЧИСТКА ОТ ТЕГОВ <think> (повторная страховка)
+        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+        text = re.sub(r'</?think>', '', text)
+        text = text.strip()
 
-        print(f"[DEBUG] Длина caption: {len(clean_text)} символов")
+        # Удаляем все неразрешённые HTML-теги, оставляем только <b> и <i>
+        # Просто заменяем все теги, кроме разрешённых, на пустоту
+        allowed_tags = ['b', 'i', 'u', 's', 'a', 'code', 'pre']
+        # Заменяем все теги, которые не входят в разрешённые
+        text = re.sub(r'<(?!\/?(?:' + '|'.join(allowed_tags) + r')\b)[^>]+>', '', text)
+
+        # Обрезаем до 650 символов
+        if len(text) > 650:
+            text = text[:650] + "… Читать далее в канале."
+            print(f"[WARN] Текст обрезан до {len(text)} символов")
+
+        print(f"[DEBUG] Длина caption: {len(text)} символов")
 
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         with open(image_path, "rb") as photo:
             files = {"photo": photo}
             data = {
                 "chat_id": TELEGRAM_CHAT_ID,
-                "caption": clean_text,
+                "caption": text,
                 "parse_mode": "HTML"
             }
             response = requests.post(url, files=files, data=data, timeout=30)
