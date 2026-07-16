@@ -6,24 +6,77 @@ import os
 import threading
 import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
-import io
 import sys
+import io
+import traceback
+import json
 
-# ========== ВСЕ КЛЮЧИ БЕРУТСЯ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ==========
+# ======================== КОНФИГУРАЦИЯ =========================
+# Читаем переменные окружения
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-# ==============================================================
+
+# Какой провайдер использовать (siliconflow, deepseek, openrouter, openai)
+API_PROVIDER = os.getenv("API_PROVIDER", "siliconflow").lower()
+# Модель для выбранного провайдера (можно переопределить)
+MODEL_NAME = os.getenv("MODEL_NAME", "")
+
+# Настройки для разных провайдеров
+PROVIDER_CONFIG = {
+    "siliconflow": {
+        "url": "https://api.siliconflow.cn/v1/chat/completions",
+        "default_model": "deepseek-ai/DeepSeek-V3",
+        "headers": lambda key: {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}"
+        }
+    },
+    "deepseek": {
+        "url": "https://api.deepseek.com/chat/completions",
+        "default_model": "deepseek-chat",
+        "headers": lambda key: {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}"
+        }
+    },
+    "openrouter": {
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "default_model": "deepseek/deepseek-chat:free",
+        "headers": lambda key: {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}",
+            "HTTP-Referer": "https://skeptik-bot.onrender.com",
+            "X-Title": "Скептик с EBITDA"
+        }
+    },
+    "openai": {
+        "url": "https://api.openai.com/v1/chat/completions",
+        "default_model": "gpt-4o-mini",
+        "headers": lambda key: {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}"
+        }
+    }
+}
+
+# Выбираем конфиг текущего провайдера
+config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["siliconflow"])
+API_URL = config["url"]
+API_HEADERS_FUNC = config["headers"]
+API_DEFAULT_MODEL = config["default_model"]
+
+# Если модель не задана в окружении, используем дефолтную
+if not MODEL_NAME:
+    MODEL_NAME = API_DEFAULT_MODEL
+
+# ======================== ФУНКЦИИ ГЕНЕРАЦИИ =========================
 
 def generate_post():
-    # ... (остаётся без изменений) ...
-    url = "https://api.deepseek.com/chat/completions"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}"
-    }
+    """Запрос к API провайдера с полной диагностикой"""
+    headers = API_HEADERS_FUNC(DEEPSEEK_API_KEY)
     payload = {
-        "model": "deepseek-chat",
+        "model": MODEL_NAME,
         "messages": [
             {
                 "role": "system",
@@ -46,54 +99,100 @@ def generate_post():
         "temperature": 0.9,
         "max_tokens": 1000
     }
-    response = requests.post(url, headers=headers, json=payload)
-    data = response.json()
-    full_text = data["choices"][0]["message"]["content"]
-    
-    if "===" in full_text:
-        post_text, image_prompt = full_text.split("===", 1)
-    else:
-        post_text = full_text
-        image_prompt = "business finance sarcastic illustration"
-    
-    return post_text.strip(), image_prompt.strip()
+
+    # Логируем запрос (без ключа)
+    print(f"[DEBUG] Provider: {API_PROVIDER}, Model: {MODEL_NAME}")
+    print(f"[DEBUG] URL: {API_URL}")
+    print(f"[DEBUG] Payload: {json.dumps(payload, ensure_ascii=False)[:200]}...")
+
+    try:
+        response = requests.post(API_URL, headers=headers, json=payload, timeout=30)
+        status = response.status_code
+        response_text = response.text
+
+        print(f"[DEBUG] Status: {status}")
+        print(f"[DEBUG] Response (first 500 chars): {response_text[:500]}")
+
+        if status != 200:
+            raise Exception(f"API вернул {status}: {response_text}")
+
+        data = response.json()
+        if "choices" not in data or not data["choices"]:
+            raise Exception(f"Ответ не содержит 'choices': {data}")
+
+        full_text = data["choices"][0]["message"]["content"]
+        if not full_text:
+            raise Exception("Пустой ответ от API")
+
+        if "===" in full_text:
+            post_text, image_prompt = full_text.split("===", 1)
+        else:
+            post_text = full_text
+            image_prompt = "business finance sarcastic illustration"
+
+        return post_text.strip(), image_prompt.strip()
+
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"Сетевая ошибка: {e}")
+    except Exception as e:
+        raise Exception(f"Ошибка при обработке ответа: {e}")
 
 def generate_image(prompt):
-    url = f"https://image.pollinations.ai/prompt/{prompt}?width=1200&height=800"
-    response = requests.get(url)
-    if response.status_code == 200:
-        with open("temp_image.jpg", "wb") as f:
-            f.write(response.content)
-        return "temp_image.jpg"
-    return None
+    """Генерация картинки через Pollinations.ai (бесплатно)"""
+    try:
+        url = f"https://image.pollinations.ai/prompt/{prompt}?width=1200&height=800"
+        response = requests.get(url, timeout=30)
+        if response.status_code == 200:
+            with open("temp_image.jpg", "wb") as f:
+                f.write(response.content)
+            return "temp_image.jpg"
+        else:
+            print(f"[ERROR] Pollinations status {response.status_code}")
+            return None
+    except Exception as e:
+        print(f"[ERROR] Pollinations error: {e}")
+        return None
 
 def publish_to_telegram(text, image_path):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-    with open(image_path, "rb") as photo:
-        files = {"photo": photo}
-        data = {"chat_id": TELEGRAM_CHAT_ID, "caption": text}
-        response = requests.post(url, files=files, data=data)
-    return response.status_code == 200
+    """Публикация поста в канал"""
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+        with open(image_path, "rb") as photo:
+            files = {"photo": photo}
+            data = {"chat_id": TELEGRAM_CHAT_ID, "caption": text}
+            response = requests.post(url, files=files, data=data, timeout=30)
+        if response.status_code != 200:
+            print(f"[ERROR] Telegram ответ: {response.text}")
+        return response.status_code == 200
+    except Exception as e:
+        print(f"[ERROR] Ошибка публикации: {e}")
+        return False
 
 def job():
+    """Главная задача – генерация и публикация"""
     print(f"[{datetime.now()}] Генерация поста...")
-    post_text, image_prompt = generate_post()
-    print(f"[{datetime.now()}] Текст получен, промпт: {image_prompt[:50]}...")
-    image_path = generate_image(image_prompt)
-    if not image_path:
-        print(f"[{datetime.now()}] ОШИБКА: не удалось сгенерировать картинку")
-        return
-    success = publish_to_telegram(post_text, image_path)
-    if success:
-        print(f"[{datetime.now()}] ✅ Пост опубликован!")
-    else:
-        print(f"[{datetime.now()}] ❌ Ошибка публикации")
+    try:
+        post_text, image_prompt = generate_post()
+        print(f"[{datetime.now()}] Текст получен, промпт: {image_prompt[:50]}...")
+        image_path = generate_image(image_prompt)
+        if not image_path:
+            print(f"[{datetime.now()}] ОШИБКА: не удалось сгенерировать картинку")
+            return
+        success = publish_to_telegram(post_text, image_path)
+        if success:
+            print(f"[{datetime.now()}] ✅ Пост опубликован!")
+        else:
+            print(f"[{datetime.now()}] ❌ Ошибка публикации")
+    except Exception as e:
+        print(f"[{datetime.now()}] ❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
+        traceback.print_exc()
 
-# ========== ВЕБ-СЕРВЕР С ТЕСТОВЫМ ЭНДПОИНТОМ ==========
+# ======================== ВЕБ-СЕРВЕР ДЛЯ RENDER =========================
+
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/test':
-            # Перехватываем stdout, чтобы увидеть вывод job()
+            # Перехватываем stdout для диагностики
             old_stdout = sys.stdout
             sys.stdout = io.StringIO()
             try:
@@ -101,12 +200,13 @@ class HealthHandler(BaseHTTPRequestHandler):
                 output = sys.stdout.getvalue()
                 self.send_response(200)
                 self.end_headers()
-                self.wfile.write(f"OK\n\n{output}".encode())
+                self.wfile.write(f"✅ Успешно!\n\n{output}".encode())
             except Exception as e:
                 output = sys.stdout.getvalue()
+                error_text = traceback.format_exc()
                 self.send_response(500)
                 self.end_headers()
-                self.wfile.write(f"ERROR: {str(e)}\n\n{output}".encode())
+                self.wfile.write(f"❌ ОШИБКА: {str(e)}\n\n{output}\n\nСТЕК:\n{error_text}".encode())
             finally:
                 sys.stdout = old_stdout
         else:
@@ -120,26 +220,28 @@ def start_health_server():
     server.serve_forever()
 
 threading.Thread(target=start_health_server, daemon=True).start()
-# ==========================================================
 
-# ========== САМОПИНГ ==========
+# ======================== САМОПИНГ (не даёт уснуть) =========================
+
 def keep_alive():
     url = "https://skeptik-bot.onrender.com"
     while True:
         try:
-            urllib.request.urlopen(url)
+            urllib.request.urlopen(url, timeout=10)
             print("[keep-alive] Пинг успешен")
-        except:
-            print("[keep-alive] Ошибка пинга")
-        time.sleep(600)
+        except Exception as e:
+            print(f"[keep-alive] Ошибка пинга: {e}")
+        time.sleep(600)  # каждые 10 минут
 
 threading.Thread(target=keep_alive, daemon=True).start()
-# ==========================================================
 
-# ========== РАСПИСАНИЕ ==========
+# ======================== РАСПИСАНИЕ ПУБЛИКАЦИЙ =========================
+
 schedule.every().day.at("10:00").do(job)
 
 print("Бот запущен. Ожидание расписания...")
+print(f"Провайдер: {API_PROVIDER}, Модель: {MODEL_NAME}")
+print(f"URL: {API_URL}")
 
 while True:
     schedule.run_pending()
