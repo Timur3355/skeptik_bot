@@ -20,7 +20,6 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 API_PROVIDER = os.getenv("API_PROVIDER", "openai").lower()
-# Меняем модель на deepseek-v3 (она не выдаёт think)
 MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-v3")
 
 # Список тем для разнообразия
@@ -54,11 +53,8 @@ if not MODEL_NAME:
 # ======================== ФУНКЦИЯ ОЧИСТКИ =========================
 def clean_text(text):
     """Удаляет внутренние рассуждения (think) и лишние пробелы"""
-    # Удаляем всё между <think> и </think> (включая сами теги)
     text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-    # Удаляем возможные остатки тегов без закрытия
     text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
-    # Убираем лишние пустые строки
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
@@ -92,7 +88,7 @@ def generate_post():
             }
         ],
         "temperature": 0.85,
-        "max_tokens": 500  # чуть больше, чтобы хватило на полный текст
+        "max_tokens": 500
     }
 
     print(f"[DEBUG] Provider: {API_PROVIDER}, Model: {MODEL_NAME}")
@@ -117,7 +113,6 @@ def generate_post():
         if not full_text:
             raise Exception("Пустой ответ от API")
 
-        # Очищаем от think-блоков
         full_text = clean_text(full_text)
 
         if "===" in full_text:
@@ -137,9 +132,13 @@ def generate_post():
     except Exception as e:
         raise Exception(f"Ошибка при обработке ответа: {e}")
 
+# ======================== ГЕНЕРАЦИЯ КАРТИНКИ (С УНИКАЛЬНЫМ СУФФИКСОМ) =========================
 def generate_image(prompt):
     try:
-        encoded_prompt = urllib.parse.quote(prompt)
+        # Добавляем случайный суффикс, чтобы избежать кеширования и повторов
+        unique_suffix = f" {random.randint(1, 100000)}"
+        full_prompt = prompt + unique_suffix
+        encoded_prompt = urllib.parse.quote(full_prompt)
         url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1200&height=800"
         print(f"[DEBUG] Pollinations URL: {url}")
 
@@ -155,10 +154,12 @@ def generate_image(prompt):
         print(f"[ERROR] Pollinations error: {e}")
         return None
 
+# ======================== ПУБЛИКАЦИЯ В TELEGRAM =========================
 def publish_to_telegram(text, image_path):
     try:
-        if len(text) > 650:
-            text = text[:650] + "… Читать далее в канале."
+        # Обрезаем до 850 символов (безопасно для Telegram)
+        if len(text) > 850:
+            text = text[:850] + "… Читать далее в канале."
             print(f"[WARN] Текст обрезан до {len(text)} символов")
 
         print(f"[DEBUG] Длина caption: {len(text)} символов")
@@ -179,6 +180,7 @@ def publish_to_telegram(text, image_path):
         print(f"[ERROR] Ошибка публикации: {e}")
         return False
 
+# ======================== ОСНОВНАЯ ЗАДАЧА =========================
 def job():
     print(f"[{datetime.now()}] Генерация поста...")
     try:
@@ -197,8 +199,7 @@ def job():
         print(f"[{datetime.now()}] ❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
         traceback.print_exc()
 
-# ======================== ВЕБ-СЕРВЕР =========================
-
+# ======================== ВЕБ-СЕРВЕР ДЛЯ RENDER =========================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/test':
@@ -239,8 +240,7 @@ def start_health_server():
 
 threading.Thread(target=start_health_server, daemon=True).start()
 
-# ======================== САМОПИНГ =========================
-
+# ======================== САМОПИНГ (НЕ ДАЁТ УСНУТЬ) =========================
 def keep_alive():
     url = "https://skeptik-bot.onrender.com"
     while True:
@@ -254,7 +254,6 @@ def keep_alive():
 threading.Thread(target=keep_alive, daemon=True).start()
 
 # ======================== РАСПИСАНИЕ =========================
-
 schedule.every().day.at("10:00").do(job)
 
 print("Бот запущен. Ожидание расписания...")
