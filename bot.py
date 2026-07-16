@@ -6,6 +6,8 @@ import os
 import threading
 import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
+import io
+import sys
 
 # ========== ВСЕ КЛЮЧИ БЕРУТСЯ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ==========
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
@@ -14,7 +16,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 # ==============================================================
 
 def generate_post():
-    """Запрос к DeepSeek: генерирует текст поста и промпт для картинки"""
+    # ... (остаётся без изменений) ...
     url = "https://api.deepseek.com/chat/completions"
     headers = {
         "Content-Type": "application/json",
@@ -57,7 +59,6 @@ def generate_post():
     return post_text.strip(), image_prompt.strip()
 
 def generate_image(prompt):
-    """Генерация картинки через Pollinations.ai (бесплатно)"""
     url = f"https://image.pollinations.ai/prompt/{prompt}?width=1200&height=800"
     response = requests.get(url)
     if response.status_code == 200:
@@ -67,7 +68,6 @@ def generate_image(prompt):
     return None
 
 def publish_to_telegram(text, image_path):
-    """Публикация поста в канал"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     with open(image_path, "rb") as photo:
         files = {"photo": photo}
@@ -76,7 +76,6 @@ def publish_to_telegram(text, image_path):
     return response.status_code == 200
 
 def job():
-    """Главная задача – генерация и публикация"""
     print(f"[{datetime.now()}] Генерация поста...")
     post_text, image_prompt = generate_post()
     print(f"[{datetime.now()}] Текст получен, промпт: {image_prompt[:50]}...")
@@ -90,35 +89,52 @@ def job():
     else:
         print(f"[{datetime.now()}] ❌ Ошибка публикации")
 
-# ========== ВЕБ-СЕРВЕР ДЛЯ RENDER (чтобы открыть порт) ==========
+# ========== ВЕБ-СЕРВЕР С ТЕСТОВЫМ ЭНДПОИНТОМ ==========
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
+        if self.path == '/test':
+            # Перехватываем stdout, чтобы увидеть вывод job()
+            old_stdout = sys.stdout
+            sys.stdout = io.StringIO()
+            try:
+                job()
+                output = sys.stdout.getvalue()
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(f"OK\n\n{output}".encode())
+            except Exception as e:
+                output = sys.stdout.getvalue()
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(f"ERROR: {str(e)}\n\n{output}".encode())
+            finally:
+                sys.stdout = old_stdout
+        else:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
 
 def start_health_server():
     port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
     server.serve_forever()
 
-# Запускаем health-сервер в отдельном потоке
 threading.Thread(target=start_health_server, daemon=True).start()
-# ================================================================
+# ==========================================================
 
-# ========== САМОПИНГ (чтобы бот не засыпал на Render) ==========
+# ========== САМОПИНГ ==========
 def keep_alive():
-    url = "https://skeptik-bot.onrender.com"  # Уже подставлен ваш URL
+    url = "https://skeptik-bot.onrender.com"
     while True:
         try:
             urllib.request.urlopen(url)
             print("[keep-alive] Пинг успешен")
         except:
             print("[keep-alive] Ошибка пинга")
-        time.sleep(600)  # каждые 10 минут
+        time.sleep(600)
 
 threading.Thread(target=keep_alive, daemon=True).start()
-# ================================================================
+# ==========================================================
 
 # ========== РАСПИСАНИЕ ==========
 schedule.every().day.at("10:00").do(job)
