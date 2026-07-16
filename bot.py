@@ -29,7 +29,6 @@ PROVIDER_CONFIG = {
             "Authorization": f"Bearer {key}"
         }
     },
-    # остальные провайдеры можно добавить при необходимости
 }
 
 config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["openai"])
@@ -90,7 +89,6 @@ def generate_post():
         if not full_text:
             raise Exception("Пустой ответ от API")
 
-        # Пытаемся разделить текст и промпт
         if "===" in full_text:
             parts = full_text.split("===", 1)
             post_text = parts[0].strip()
@@ -99,7 +97,6 @@ def generate_post():
             post_text = full_text.strip()
             image_prompt = ""
 
-        # Если промпт пустой или слишком короткий — используем дефолтный
         if len(image_prompt) < 10:
             image_prompt = "business finance sarcastic illustration"
             print("[WARN] Промпт для картинки был пуст, использован стандартный")
@@ -110,9 +107,7 @@ def generate_post():
         raise Exception(f"Ошибка при обработке ответа: {e}")
 
 def generate_image(prompt):
-    """Генерация картинки через Pollinations.ai с URL-кодированием"""
     try:
-        # Кодируем промпт для безопасной вставки в URL
         encoded_prompt = urllib.parse.quote(prompt)
         url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1200&height=800"
         print(f"[DEBUG] Pollinations URL: {url}")
@@ -131,6 +126,11 @@ def generate_image(prompt):
 
 def publish_to_telegram(text, image_path):
     try:
+        # Обрезаем текст до 1020 символов (оставляем запас)
+        if len(text) > 1020:
+            text = text[:1020] + "... (продолжение в следующем посте)"
+            print("[WARN] Текст обрезан до 1020 символов")
+
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         with open(image_path, "rb") as photo:
             files = {"photo": photo}
