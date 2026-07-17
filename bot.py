@@ -19,8 +19,8 @@ from contextlib import closing
 # ======================== КОНФИГУРАЦИЯ =========================
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")          # ID канала (с минусом)
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")                # Ваш личный ID
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
 API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
 MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
@@ -111,13 +111,11 @@ def update_post_status(session_id, status):
         if status == 'published':
             conn.execute('UPDATE posts SET published_at = ? WHERE session_id = ?', (datetime.now().isoformat(), session_id))
         conn.commit()
-    print(f"[DEBUG] Статус обновлён: session_id={session_id}, status={status}")
 
 def delete_post(session_id):
     with closing(sqlite3.connect(DB_PATH)) as conn:
         conn.execute('DELETE FROM posts WHERE session_id = ?', (session_id,))
         conn.commit()
-    print(f"[DEBUG] Пост удалён: session_id={session_id}")
 
 # ======================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =========================
 def clean_text(text):
@@ -126,7 +124,7 @@ def clean_text(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
-# ======================== ГЕНЕРАЦИЯ ПОСТА (БЕЗ HTML) =========================
+# ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
     topic = random.choice(TOPICS)
     print(f"[DEBUG] Выбрана тема: {topic}")
@@ -141,10 +139,10 @@ def generate_post():
                     "Ты — автор канала «Скептик с EBITDA».\n"
                     "Стиль: дерзкий, саркастичный, с конкретными цифрами.\n"
                     "НЕ выводи <think>, рассуждения — только готовый пост.\n"
-                    "Пост должен быть длиной 400–500 символов (4–5 абзацев).\n"
+                    "Пост должен быть строго до 400 символов (3–4 коротких абзаца).\n"
                     "Используй эмодзи в начале абзацев (например, 📦, 💰, 📊, ⚠️, 🔥, 📉).\n"
-                    "НЕ используй HTML-теги (<b>, <i> и т.д.).\n"
-                    "В конце — Action Item с ✅ (одно предложение).\n"
+                    "НЕ используй HTML-теги.\n"
+                    "В конце — Action Item с ✅ (одно короткое предложение).\n"
                     "После текста === и описание картинки (англ., 3–4 слова)."
                 )
             },
@@ -154,7 +152,7 @@ def generate_post():
             }
         ],
         "temperature": 0.85,
-        "max_tokens": 280
+        "max_tokens": 220
     }
 
     for attempt in range(3):
@@ -211,16 +209,16 @@ def generate_image(prompt):
         print(f"[ERROR] Pollinations error: {e}")
         return None
 
-# ======================== ПУБЛИКАЦИЯ В КАНАЛ (БЕЗ HTML) =========================
+# ======================== ПУБЛИКАЦИЯ В КАНАЛ =========================
 def publish_to_telegram(text, image_path):
     try:
         if not os.path.exists(image_path):
             print(f"[ERROR] Файл {image_path} не найден")
             return False
 
-        # Обрезаем до 950 символов (запас)
-        if len(text) > 950:
-            text = text[:950]
+        # Обрезаем до 1000 символов (оставляем запас 24 символа до лимита 1024)
+        if len(text) > 1000:
+            text = text[:1000]
             last_space = text.rfind(' ')
             if last_space > 0:
                 text = text[:last_space] + "… Читать далее в канале."
@@ -246,7 +244,6 @@ def publish_to_telegram(text, image_path):
             data = {
                 "chat_id": TELEGRAM_CHAT_ID,
                 "caption": text
-                # parse_mode отсутствует
             }
             response = requests.post(url, files=files, data=data, timeout=30)
         if response.status_code == 200:
@@ -263,9 +260,9 @@ def publish_to_telegram(text, image_path):
 # ======================== ОТПРАВКА НА ПРОВЕРКУ =========================
 def send_for_approval(post_text, image_path, image_prompt, session_id):
     save_post(session_id, post_text, image_path, image_prompt)
-    # Обрезаем для отображения в личке
-    if len(post_text) > 950:
-        post_text = post_text[:950]
+    # Для личного сообщения тоже обрезаем
+    if len(post_text) > 1000:
+        post_text = post_text[:1000]
         last_space = post_text.rfind(' ')
         if last_space > 0:
             post_text = post_text[:last_space] + "… Читать далее в канале."
@@ -307,10 +304,23 @@ def process_callback(callback_data, chat_id, message_id):
     print(f"[DEBUG] Callback: action={action}, session_id={session_id}")
     post_data = get_post(session_id)
     if not post_data:
-        answer_callback(chat_id, message_id, "⏳ Черновик не найден (возможно, устарел).")
+        # Автоматическая перегенерация при потере черновика
+        answer_callback(chat_id, message_id, "🔄 Черновик устарел, генерирую новый...")
+        try:
+            new_text, new_prompt = generate_post()
+            new_image_path = generate_image(new_prompt)
+            if not new_image_path:
+                answer_callback(chat_id, message_id, "❌ Ошибка генерации картинки")
+                return
+            new_session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
+            send_for_approval(new_text, new_image_path, new_prompt, new_session_id)
+            answer_callback(chat_id, message_id, "✅ Новый пост отправлен на проверку.")
+        except Exception as e:
+            answer_callback(chat_id, message_id, f"❌ Ошибка: {str(e)[:100]}")
         return
+
     if post_data["status"] == "published":
-        answer_callback(chat_id, message_id, "ℹ️ Этот пост уже был опубликован ранее.")
+        answer_callback(chat_id, message_id, "ℹ️ Этот пост уже был опубликован.")
         return
     if post_data["status"] == "rejected":
         answer_callback(chat_id, message_id, "ℹ️ Этот пост был отклонён.")
@@ -336,7 +346,7 @@ def process_callback(callback_data, chat_id, message_id):
                 answer_callback(chat_id, message_id, "❌ Ошибка генерации картинки")
                 return
             new_session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
-            delete_post(session_id)  # удаляем старый
+            delete_post(session_id)
             send_for_approval(new_text, new_image_path, new_prompt, new_session_id)
             answer_callback(chat_id, message_id, "🔄 Новый пост отправлен на проверку.")
         except Exception as e:
