@@ -17,8 +17,8 @@ import re
 # ======================== КОНФИГУРАЦИЯ =========================
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")          # ID канала
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")                # Ваш личный ID
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
 API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
 MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
@@ -60,7 +60,7 @@ API_DEFAULT_MODEL = config["default_model"]
 if not MODEL_NAME:
     MODEL_NAME = API_DEFAULT_MODEL
 
-pending_posts = {}  # session_id -> {text, image_path, image_prompt}
+pending_posts = {}
 
 def clean_text(text):
     text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
@@ -171,9 +171,9 @@ def generate_image(prompt):
 
 def publish_to_telegram(text, image_path):
     try:
-        # Обрезаем до 800 символов (с запасом для эмодзи и HTML)
-        if len(text) > 800:
-            text = text[:800] + "… Читать далее в канале."
+        # Жёсткая обрезка до 650 символов, чтобы гарантировать лимит
+        if len(text) > 650:
+            text = text[:650] + "… Читать далее в канале."
             print(f"[WARN] Текст обрезан до {len(text)} символов")
 
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
@@ -193,11 +193,16 @@ def publish_to_telegram(text, image_path):
         return False
 
 def send_for_approval(post_text, image_path, image_prompt, session_id):
-    # Обрезаем текст до 800 символов для модерации
-    if len(post_text) > 800:
-        post_text = post_text[:800] + "…"
-        print(f"[WARN] Текст обрезан до 800 символов для модерации")
+    # Обрезаем сам пост до 600 символов с учётом префикса
+    if len(post_text) > 600:
+        post_text = post_text[:600] + "…"
+        print(f"[WARN] Текст обрезан до 600 символов для модерации")
     caption = f"📝 Новый пост на проверку:\n\n{post_text}"
+    # Если капшн всё ещё слишком длинный, обрезаем его принудительно
+    if len(caption) > 900:
+        caption = caption[:900] + "…"
+        print(f"[WARN] Капшн обрезан до 900 символов")
+
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         with open(image_path, "rb") as photo:
