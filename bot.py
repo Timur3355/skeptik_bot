@@ -21,7 +21,14 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
 API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
-MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
+
+# Жёстко задаём правильную модель, игнорируя возможную невалидную переменную
+# Если переменная MODEL_NAME задана и содержит "/", используем её, иначе — дефолт
+user_model = os.getenv("MODEL_NAME", "")
+if "/" in user_model:
+    MODEL_NAME = user_model
+else:
+    MODEL_NAME = "deepseek/deepseek-chat:free"  # всегда корректный ID
 
 TOPICS = [
     "логистические провалы Ozon: затраты, сроки доставки, убытки",
@@ -47,7 +54,6 @@ PROVIDER_CONFIG = {
         "headers": lambda key: {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {key}"
-            # Убраны HTTP-Referer и X-Title, чтобы избежать проблем с кодировкой
         }
     }
 }
@@ -56,7 +62,9 @@ config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["openrouter"])
 API_URL = config["url"]
 API_HEADERS_FUNC = config["headers"]
 API_DEFAULT_MODEL = config["default_model"]
-if not MODEL_NAME:
+
+# Если модель не содержит "/", то используем дефолтную из конфига
+if "/" not in MODEL_NAME:
     MODEL_NAME = API_DEFAULT_MODEL
 
 pending_posts = {}
