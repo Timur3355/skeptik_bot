@@ -171,8 +171,9 @@ def generate_image(prompt):
 
 def publish_to_telegram(text, image_path):
     try:
-        if len(text) > 950:
-            text = text[:950] + "… Читать далее в канале."
+        # Обрезаем до 800 символов (с запасом для эмодзи и HTML)
+        if len(text) > 800:
+            text = text[:800] + "… Читать далее в канале."
             print(f"[WARN] Текст обрезан до {len(text)} символов")
 
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
@@ -192,6 +193,10 @@ def publish_to_telegram(text, image_path):
         return False
 
 def send_for_approval(post_text, image_path, image_prompt, session_id):
+    # Обрезаем текст до 800 символов для модерации
+    if len(post_text) > 800:
+        post_text = post_text[:800] + "…"
+        print(f"[WARN] Текст обрезан до 800 символов для модерации")
     caption = f"📝 Новый пост на проверку:\n\n{post_text}"
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
