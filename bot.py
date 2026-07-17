@@ -19,8 +19,8 @@ from contextlib import closing
 # ======================== КОНФИГУРАЦИЯ =========================
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")          # ID канала (с минусом)
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")                # Ваш личный ID
 
 API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
 MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
@@ -92,14 +92,18 @@ def save_post(session_id, text, image_path, image_prompt):
             (session_id, text, image_path, image_prompt, 'pending', datetime.now().isoformat())
         )
         conn.commit()
+    print(f"[DEBUG] Пост сохранён в БД: session_id={session_id}")
 
 def get_post(session_id):
     with closing(sqlite3.connect(DB_PATH)) as conn:
         cursor = conn.execute('SELECT text, image_path, image_prompt, status FROM posts WHERE session_id = ?', (session_id,))
         row = cursor.fetchone()
         if row:
+            print(f"[DEBUG] Найден пост: session_id={session_id}, status={row[3]}")
             return {'text': row[0], 'image_path': row[1], 'image_prompt': row[2], 'status': row[3]}
-        return None
+        else:
+            print(f"[DEBUG] Пост не найден: session_id={session_id}")
+            return None
 
 def update_post_status(session_id, status):
     with closing(sqlite3.connect(DB_PATH)) as conn:
@@ -107,11 +111,13 @@ def update_post_status(session_id, status):
         if status == 'published':
             conn.execute('UPDATE posts SET published_at = ? WHERE session_id = ?', (datetime.now().isoformat(), session_id))
         conn.commit()
+    print(f"[DEBUG] Статус обновлён: session_id={session_id}, status={status}")
 
 def delete_post(session_id):
     with closing(sqlite3.connect(DB_PATH)) as conn:
         conn.execute('DELETE FROM posts WHERE session_id = ?', (session_id,))
         conn.commit()
+    print(f"[DEBUG] Пост удалён: session_id={session_id}")
 
 # ======================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =========================
 def clean_text(text):
@@ -240,7 +246,7 @@ def publish_to_telegram(text, image_path):
             data = {
                 "chat_id": TELEGRAM_CHAT_ID,
                 "caption": text
-                # parse_mode НЕ используем
+                # parse_mode отсутствует
             }
             response = requests.post(url, files=files, data=data, timeout=30)
         if response.status_code == 200:
@@ -298,11 +304,18 @@ def process_callback(callback_data, chat_id, message_id):
     if len(parts) != 2:
         return
     action, session_id = parts
-    print(f"[DEBUG] Callback action={action}, session_id={session_id}")
+    print(f"[DEBUG] Callback: action={action}, session_id={session_id}")
     post_data = get_post(session_id)
     if not post_data:
-        answer_callback(chat_id, message_id, "⏳ Черновик устарел")
+        answer_callback(chat_id, message_id, "⏳ Черновик не найден (возможно, устарел).")
         return
+    if post_data["status"] == "published":
+        answer_callback(chat_id, message_id, "ℹ️ Этот пост уже был опубликован ранее.")
+        return
+    if post_data["status"] == "rejected":
+        answer_callback(chat_id, message_id, "ℹ️ Этот пост был отклонён.")
+        return
+
     if action == "approve":
         for attempt in range(3):
             ok = publish_to_telegram(post_data["text"], post_data["image_path"])
@@ -323,13 +336,13 @@ def process_callback(callback_data, chat_id, message_id):
                 answer_callback(chat_id, message_id, "❌ Ошибка генерации картинки")
                 return
             new_session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
-            delete_post(session_id)
+            delete_post(session_id)  # удаляем старый
             send_for_approval(new_text, new_image_path, new_prompt, new_session_id)
             answer_callback(chat_id, message_id, "🔄 Новый пост отправлен на проверку.")
         except Exception as e:
             answer_callback(chat_id, message_id, f"❌ Ошибка перегенерации: {str(e)[:100]}")
     elif action == "reject":
-        delete_post(session_id)
+        update_post_status(session_id, 'rejected')
         answer_callback(chat_id, message_id, "❌ Пост отклонён.")
 
 def answer_callback(chat_id, message_id, text):
