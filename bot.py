@@ -20,11 +20,9 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
-API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
-# Устанавливаем модель через переменную окружения MODEL_NAME
-# Для ChatAnywhere: gpt-4o-mini (30 запросов/день)
-# Для OpenRouter: microsoft/phi-3-mini-128k-instruct:free (50-100/день)
-MODEL_NAME = os.getenv("MODEL_NAME", "microsoft/phi-3-mini-128k-instruct:free")
+# Принудительно используем ChatAnywhere (openai)
+API_PROVIDER = "openai"  # или можно оставить переменную, но в конфиге openai должен быть первым
+MODEL_NAME = "gpt-4o-mini"  # бесплатная модель ChatAnywhere
 
 TOPICS = [
     "логистические провалы Ozon: затраты, сроки доставки, убытки",
@@ -46,7 +44,7 @@ PROVIDER_CONFIG = {
     },
     "openrouter": {
         "url": "https://openrouter.ai/api/v1/chat/completions",
-        "default_model": "microsoft/phi-3-mini-128k-instruct:free",
+        "default_model": "gpt-4o-mini",  # не используется, но оставим
         "headers": lambda key: {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {key}"
@@ -54,7 +52,7 @@ PROVIDER_CONFIG = {
     }
 }
 
-config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["openrouter"])
+config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["openai"])
 API_URL = config["url"]
 API_HEADERS_FUNC = config["headers"]
 API_DEFAULT_MODEL = config["default_model"]
