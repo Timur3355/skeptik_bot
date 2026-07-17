@@ -21,8 +21,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
 API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
-# Явно указываем рабочую модель
-MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")  # или deepseek-r1:free
+MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
 
 TOPICS = [
     "логистические провалы Ozon: затраты, сроки доставки, убытки",
@@ -49,7 +48,7 @@ PROVIDER_CONFIG = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {key}",
             "HTTP-Referer": "https://skeptik-bot.onrender.com",
-            "X-Title": "Скептик с EBITDA"
+            "X-Title": "Skeptic with EBITDA"  # Исправлено: латиница
         }
     }
 }
@@ -70,24 +69,19 @@ def clean_text(text):
     text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
     text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
     
-    # Если текст начинается с "Let's", "We need", "I'll", "Here's" и т.п. — это рассуждения
-    # Обрезаем до первого абзаца, который выглядит как пост (с эмодзи или жирным шрифтом)
+    # Обрезаем до первого абзаца с эмодзи или жирным шрифтом
     lines = text.split('\n')
     clean_lines = []
     start = False
     for line in lines:
-        # Пропускаем пустые строки в начале
         if not start and not line.strip():
             continue
-        # Если строка начинается с эмодзи или с <b> или с цифры — это начало поста
         if not start and re.match(r'^[\U0001F000-\U0001FFFF]|^<b>|^\d', line.strip()):
             start = True
         if start:
             clean_lines.append(line)
     
-    # Если не нашли маркеров, берем всё, что после последнего пустого блока
     if not clean_lines:
-        # Ищем первый абзац, который не является вопросом или рассуждением
         for i, line in enumerate(lines):
             if line.strip() and not re.search(r'\?$', line.strip()) and len(line.strip()) > 10:
                 clean_lines = lines[i:]
@@ -160,7 +154,6 @@ def generate_post():
                 post_text = full_text.strip()
                 image_prompt = ""
 
-            # Если промпт слишком длинный, обрезаем до 200 символов
             if len(image_prompt) > 200:
                 image_prompt = image_prompt[:200]
                 print("[WARN] Промпт для картинки обрезан до 200 символов")
@@ -185,7 +178,6 @@ def generate_post():
 # ======================== ГЕНЕРАЦИЯ КАРТИНКИ =========================
 def generate_image(prompt):
     try:
-        # Уникальный суффикс
         unique_suffix = f" {random.randint(1, 100000)}"
         full_prompt = prompt + unique_suffix
         encoded_prompt = urllib.parse.quote(full_prompt)
