@@ -46,9 +46,8 @@ PROVIDER_CONFIG = {
         "default_model": "deepseek/deepseek-chat:free",
         "headers": lambda key: {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}",
-            "HTTP-Referer": "https://skeptik-bot.onrender.com"
-            # X-Title удалён из-за проблем с кодировкой
+            "Authorization": f"Bearer {key}"
+            # Убираем HTTP-Referer и X-Title, чтобы избежать проблем с кодировкой
         }
     }
 }
@@ -76,6 +75,9 @@ def generate_post():
     print(f"[DEBUG] Выбрана тема: {topic}")
 
     headers = API_HEADERS_FUNC(DEEPSEEK_API_KEY)
+    # Гарантируем, что все заголовки ASCII
+    headers = {k: v.encode('ascii', 'ignore').decode('ascii') for k, v in headers.items()}
+
     payload = {
         "model": MODEL_NAME,
         "messages": [
@@ -144,6 +146,7 @@ def generate_post():
             time.sleep(5)
         except Exception as e:
             print(f"[ERROR] Ошибка на попытке {attempt+1}: {e}")
+            traceback.print_exc()  # выводим полный стек для диагностики
             if attempt == 2:
                 raise
             time.sleep(3)
