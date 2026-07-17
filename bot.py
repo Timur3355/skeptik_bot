@@ -21,7 +21,8 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
 API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
-MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
+# Явно указываем рабочую модель
+MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")  # или deepseek-r1:free
 
 TOPICS = [
     "логистические провалы Ozon: затраты, сроки доставки, убытки",
@@ -62,12 +63,41 @@ if not MODEL_NAME:
 
 pending_posts = {}
 
+# ======================== УЛУЧШЕННАЯ ОЧИСТКА ТЕКСТА =========================
 def clean_text(text):
+    """Удаляет рассуждения и оставляет только готовый пост"""
+    # Удаляем блоки think
     text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
     text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
+    
+    # Если текст начинается с "Let's", "We need", "I'll", "Here's" и т.п. — это рассуждения
+    # Обрезаем до первого абзаца, который выглядит как пост (с эмодзи или жирным шрифтом)
+    lines = text.split('\n')
+    clean_lines = []
+    start = False
+    for line in lines:
+        # Пропускаем пустые строки в начале
+        if not start and not line.strip():
+            continue
+        # Если строка начинается с эмодзи или с <b> или с цифры — это начало поста
+        if not start and re.match(r'^[\U0001F000-\U0001FFFF]|^<b>|^\d', line.strip()):
+            start = True
+        if start:
+            clean_lines.append(line)
+    
+    # Если не нашли маркеров, берем всё, что после последнего пустого блока
+    if not clean_lines:
+        # Ищем первый абзац, который не является вопросом или рассуждением
+        for i, line in enumerate(lines):
+            if line.strip() and not re.search(r'\?$', line.strip()) and len(line.strip()) > 10:
+                clean_lines = lines[i:]
+                break
+    
+    text = '\n'.join(clean_lines)
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
+# ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
     topic = random.choice(TOPICS)
     print(f"[DEBUG] Выбрана тема: {topic}")
@@ -81,11 +111,11 @@ def generate_post():
                 "content": (
                     "Ты — автор канала «Скептик с EBITDA».\n"
                     "Стиль: дерзкий, саркастичный, с конкретными цифрами из отчётности.\n"
-                    "НЕ выводи внутренние рассуждения, теги <think> — только готовый пост.\n"
+                    "НЕ выводи внутренние рассуждения, теги <think>, пояснения — только готовый пост.\n"
                     "Пост должен быть строго до 500 символов (3–4 коротких абзаца).\n"
                     "Используй HTML: <b>жирный</b> для цифр, эмодзи в начале абзацев.\n"
                     "В конце — Action Item с ✅.\n"
-                    "После текста === и описание картинки (англ., 3–4 слова)."
+                    "После текста поставь === и краткое описание картинки (на английском, 3–4 слова)."
                 )
             },
             {
@@ -130,6 +160,11 @@ def generate_post():
                 post_text = full_text.strip()
                 image_prompt = ""
 
+            # Если промпт слишком длинный, обрезаем до 200 символов
+            if len(image_prompt) > 200:
+                image_prompt = image_prompt[:200]
+                print("[WARN] Промпт для картинки обрезан до 200 символов")
+
             if len(image_prompt) < 10:
                 image_prompt = "business finance sarcastic illustration"
                 print("[WARN] Промпт для картинки был пуст, использован стандартный")
@@ -147,9 +182,10 @@ def generate_post():
 
     raise Exception("Не удалось получить ответ от API после 3 попыток")
 
+# ======================== ГЕНЕРАЦИЯ КАРТИНКИ =========================
 def generate_image(prompt):
     try:
-        # Уникальный суффикс и seed для полного избегания кеша
+        # Уникальный суффикс
         unique_suffix = f" {random.randint(1, 100000)}"
         full_prompt = prompt + unique_suffix
         encoded_prompt = urllib.parse.quote(full_prompt)
@@ -170,6 +206,7 @@ def generate_image(prompt):
         print(f"[ERROR] Pollinations error: {e}")
         return None
 
+# ======================== ПУБЛИКАЦИЯ =========================
 def publish_to_telegram(text, image_path):
     try:
         if len(text) > 750:
@@ -192,6 +229,7 @@ def publish_to_telegram(text, image_path):
         print(f"[ERROR] Ошибка публикации: {e}")
         return False
 
+# ======================== ОТПРАВКА НА МОДЕРАЦИЮ =========================
 def send_for_approval(post_text, image_path, image_prompt, session_id):
     caption = f"📝 Новый пост на проверку:\n\n{post_text}"
     try:
@@ -247,6 +285,7 @@ def job():
         print(f"[{datetime.now()}] ❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
         traceback.print_exc()
 
+# ======================== ОБРАБОТЧИК КНОПОК =========================
 def process_callback(callback_data, chat_id, message_id):
     parts = callback_data.split('_', 1)
     if len(parts) != 2:
@@ -397,7 +436,7 @@ def keep_alive():
 
 threading.Thread(target=keep_alive, daemon=True).start()
 
-# ======================== ЗАПУСК ПОЛЛИНГА =========================
+# ======================== ПОЛЛИНГ =========================
 threading.Thread(target=poll_updates, daemon=True).start()
 
 # ======================== РАСПИСАНИЕ =========================
