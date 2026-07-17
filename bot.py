@@ -46,9 +46,8 @@ PROVIDER_CONFIG = {
         "default_model": "deepseek/deepseek-chat:free",
         "headers": lambda key: {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}",
-            "HTTP-Referer": "https://skeptik-bot.onrender.com",
-            "X-Title": "Skeptic with EBITDA"  # Исправлено: латиница
+            "Authorization": f"Bearer {key}"
+            # Убраны HTTP-Referer и X-Title, чтобы избежать проблем с кодировкой
         }
     }
 }
@@ -62,14 +61,10 @@ if not MODEL_NAME:
 
 pending_posts = {}
 
-# ======================== УЛУЧШЕННАЯ ОЧИСТКА ТЕКСТА =========================
+# ======================== ОЧИСТКА ТЕКСТА =========================
 def clean_text(text):
-    """Удаляет рассуждения и оставляет только готовый пост"""
-    # Удаляем блоки think
     text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
     text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
-    
-    # Обрезаем до первого абзаца с эмодзи или жирным шрифтом
     lines = text.split('\n')
     clean_lines = []
     start = False
@@ -80,13 +75,11 @@ def clean_text(text):
             start = True
         if start:
             clean_lines.append(line)
-    
     if not clean_lines:
         for i, line in enumerate(lines):
             if line.strip() and not re.search(r'\?$', line.strip()) and len(line.strip()) > 10:
                 clean_lines = lines[i:]
                 break
-    
     text = '\n'.join(clean_lines)
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
