@@ -35,7 +35,7 @@ TOPICS = [
 PROVIDER_CONFIG = {
     "openai": {
         "url": "https://api.chatanywhere.tech/v1/chat/completions",
-        "default_model": "deepseek-v3",
+        "default_model": "gpt-4o-mini",
         "headers": lambda key: {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {key}"
@@ -73,10 +73,21 @@ def close_html_tags(text):
     stack = []
     for tag in re.findall(r'<([bius]+)>', text):
         stack.append(tag)
-    # Проходим в обратном порядке и добавляем закрывающие теги
     for tag in reversed(stack):
         text += f'</{tag}>'
     return text
+
+def truncate_text(text, max_len=750):
+    """Обрезает текст до max_len символов, стараясь не разрывать слова, и добавляет многоточие"""
+    if len(text) <= max_len:
+        return text
+    truncated = text[:max_len]
+    last_space = truncated.rfind(' ')
+    if last_space > 0:
+        truncated = truncated[:last_space] + "… Читать далее в канале."
+    else:
+        truncated = truncated + "… Читать далее в канале."
+    return close_html_tags(truncated)
 
 def generate_post():
     topic = random.choice(TOPICS)
@@ -181,20 +192,7 @@ def generate_image(prompt):
 
 def publish_to_telegram(text, image_path):
     try:
-        # Обрезаем до 750 символов с учётом HTML-тегов
-        if len(text) > 750:
-            text = text[:750]
-            # Находим последний пробел для аккуратной обрезки
-            last_space = text.rfind(' ')
-            if last_space > 0:
-                text = text[:last_space] + "… Читать далее в канале."
-            else:
-                text = text + "… Читать далее в канале."
-            print(f"[WARN] Текст обрезан до {len(text)} символов")
-
-        # Закрываем незакрытые HTML-теги
-        text = close_html_tags(text)
-
+        text = truncate_text(text, max_len=750)
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         with open(image_path, "rb") as photo:
             files = {"photo": photo}
@@ -212,7 +210,9 @@ def publish_to_telegram(text, image_path):
         return False
 
 def send_for_approval(post_text, image_path, image_prompt, session_id):
-    caption = f"📝 Новый пост на проверку:\n\n{post_text}"
+    # Обрезаем текст для модерации, оставляя запас для префикса
+    truncated_text = truncate_text(post_text, max_len=650)
+    caption = f"📝 Новый пост на проверку:\n\n{truncated_text}"
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         with open(image_path, "rb") as photo:
