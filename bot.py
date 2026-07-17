@@ -120,15 +120,7 @@ def clean_text(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
-def close_html_tags(text):
-    stack = []
-    for tag in re.findall(r'<([bius]+)>', text):
-        stack.append(tag)
-    for tag in reversed(stack):
-        text += f'</{tag}>'
-    return text
-
-# ======================== ГЕНЕРАЦИЯ ПОСТА =========================
+# ======================== ГЕНЕРАЦИЯ ПОСТА (БЕЗ HTML) =========================
 def generate_post():
     topic = random.choice(TOPICS)
     print(f"[DEBUG] Выбрана тема: {topic}")
@@ -143,8 +135,9 @@ def generate_post():
                     "Ты — автор канала «Скептик с EBITDA».\n"
                     "Стиль: дерзкий, саркастичный, с конкретными цифрами.\n"
                     "НЕ выводи <think>, рассуждения — только готовый пост.\n"
-                    "Пост должен быть строго до 500 символов (4–5 коротких абзацев).\n"
-                    "Используй HTML: <b>жирный</b> для цифр, эмодзи в начале абзацев.\n"
+                    "Пост должен быть длиной 400–500 символов (4–5 абзацев).\n"
+                    "Используй эмодзи в начале абзацев (например, 📦, 💰, 📊, ⚠️, 🔥, 📉).\n"
+                    "НЕ используй HTML-теги (<b>, <i> и т.д.).\n"
                     "В конце — Action Item с ✅ (одно предложение).\n"
                     "После текста === и описание картинки (англ., 3–4 слова)."
                 )
@@ -155,7 +148,7 @@ def generate_post():
             }
         ],
         "temperature": 0.85,
-        "max_tokens": 280  # уменьшено, чтобы текст был короче
+        "max_tokens": 280
     }
 
     for attempt in range(3):
@@ -212,23 +205,22 @@ def generate_image(prompt):
         print(f"[ERROR] Pollinations error: {e}")
         return None
 
-# ======================== ПУБЛИКАЦИЯ В КАНАЛ =========================
+# ======================== ПУБЛИКАЦИЯ В КАНАЛ (БЕЗ HTML) =========================
 def publish_to_telegram(text, image_path):
     try:
         if not os.path.exists(image_path):
             print(f"[ERROR] Файл {image_path} не найден")
             return False
 
-        # Обрезаем до 900 символов (оставляем запас 124 символа до лимита 1024)
-        if len(text) > 900:
-            text = text[:900]
+        # Обрезаем до 950 символов (запас)
+        if len(text) > 950:
+            text = text[:950]
             last_space = text.rfind(' ')
             if last_space > 0:
                 text = text[:last_space] + "… Читать далее в канале."
             else:
                 text = text + "… Читать далее в канале."
-        text = close_html_tags(text)
-        print(f"[DEBUG] Длина текста после обрезки: {len(text)} символов")
+        print(f"[DEBUG] Длина текста: {len(text)} символов")
 
         # Проверяем права бота
         check_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getChatMember"
@@ -247,8 +239,8 @@ def publish_to_telegram(text, image_path):
             files = {"photo": photo}
             data = {
                 "chat_id": TELEGRAM_CHAT_ID,
-                "caption": text,
-                "parse_mode": "HTML"
+                "caption": text
+                # parse_mode НЕ используем
             }
             response = requests.post(url, files=files, data=data, timeout=30)
         if response.status_code == 200:
@@ -265,9 +257,9 @@ def publish_to_telegram(text, image_path):
 # ======================== ОТПРАВКА НА ПРОВЕРКУ =========================
 def send_for_approval(post_text, image_path, image_prompt, session_id):
     save_post(session_id, post_text, image_path, image_prompt)
-    # Для проверки тоже обрезаем, чтобы не превысить лимит в личке
-    if len(post_text) > 900:
-        post_text = post_text[:900]
+    # Обрезаем для отображения в личке
+    if len(post_text) > 950:
+        post_text = post_text[:950]
         last_space = post_text.rfind(' ')
         if last_space > 0:
             post_text = post_text[:last_space] + "… Читать далее в канале."
@@ -281,7 +273,6 @@ def send_for_approval(post_text, image_path, image_prompt, session_id):
             data = {
                 "chat_id": ADMIN_CHAT_ID,
                 "caption": caption,
-                "parse_mode": "HTML",
                 "reply_markup": json.dumps({
                     "inline_keyboard": [
                         [
@@ -344,7 +335,7 @@ def process_callback(callback_data, chat_id, message_id):
 def answer_callback(chat_id, message_id, text):
     try:
         send_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        send_data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+        send_data = {"chat_id": chat_id, "text": text}
         requests.post(send_url, json=send_data, timeout=10)
     except Exception as e:
         print(f"[ERROR] Ошибка ответа на callback: {e}")
