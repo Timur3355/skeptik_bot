@@ -21,7 +21,8 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
 API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
-MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
+# Используем бесплатную модель Gemini от Google (доступна на OpenRouter)
+MODEL_NAME = os.getenv("MODEL_NAME", "google/gemini-2.0-flash-lite-preview-02-05:free")
 
 TOPICS = [
     "логистические провалы Ozon: затраты, сроки доставки, убытки",
@@ -43,11 +44,10 @@ PROVIDER_CONFIG = {
     },
     "openrouter": {
         "url": "https://openrouter.ai/api/v1/chat/completions",
-        "default_model": "deepseek/deepseek-chat:free",
+        "default_model": "google/gemini-2.0-flash-lite-preview-02-05:free",
         "headers": lambda key: {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {key}"
-            # Убираем HTTP-Referer и X-Title, чтобы избежать проблем с кодировкой
         }
     }
 }
@@ -75,7 +75,7 @@ def generate_post():
     print(f"[DEBUG] Выбрана тема: {topic}")
 
     headers = API_HEADERS_FUNC(DEEPSEEK_API_KEY)
-    # Гарантируем, что все заголовки ASCII
+    # Преобразуем заголовки в ASCII (на случай проблем с кодировкой)
     headers = {k: v.encode('ascii', 'ignore').decode('ascii') for k, v in headers.items()}
 
     payload = {
@@ -146,7 +146,7 @@ def generate_post():
             time.sleep(5)
         except Exception as e:
             print(f"[ERROR] Ошибка на попытке {attempt+1}: {e}")
-            traceback.print_exc()  # выводим полный стек для диагностики
+            traceback.print_exc()
             if attempt == 2:
                 raise
             time.sleep(3)
