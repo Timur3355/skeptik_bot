@@ -16,7 +16,53 @@ import re
 import sqlite3
 from contextlib import closing
 
-# ======================== ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ =========================
+# ======================== КОНФИГУРАЦИЯ =========================
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")          # ID канала (с минусом)
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
+
+API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
+MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
+
+TOPICS = [
+    "логистические провалы Ozon: затраты, сроки доставки, убытки",
+    "штрафы и возвраты Wildberries: как компания зарабатывает на продавцах",
+    "долговая нагрузка Магнита: кредиты, проценты, соотношение долга к EBITDA",
+    "маркетинговые расходы Ozon: сколько тратят на привлечение клиентов и окупается ли это",
+    "технологические проблемы Wildberries: баги, сбои, инвестиции в IT",
+    "стратегия экспансии Магнита: открытие и закрытие магазинов, эффективность"
+]
+
+PROVIDER_CONFIG = {
+    "openai": {
+        "url": "https://api.chatanywhere.tech/v1/chat/completions",
+        "default_model": "deepseek-v3",
+        "headers": lambda key: {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}"
+        }
+    },
+    "openrouter": {
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "default_model": "deepseek/deepseek-chat:free",
+        "headers": lambda key: {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}",
+            "HTTP-Referer": "https://skeptik-bot.onrender.com",
+            "X-Title": "Скептик с EBITDA"
+        }
+    }
+}
+
+config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["openrouter"])
+API_URL = config["url"]
+API_HEADERS_FUNC = config["headers"]
+API_DEFAULT_MODEL = config["default_model"]
+if not MODEL_NAME:
+    MODEL_NAME = API_DEFAULT_MODEL
+
+# ======================== БАЗА ДАННЫХ =========================
 DB_PATH = "posts.db"
 
 def init_db():
@@ -67,58 +113,7 @@ def delete_post(session_id):
         conn.execute('DELETE FROM posts WHERE session_id = ?', (session_id,))
         conn.commit()
 
-def get_pending_posts():
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        cursor = conn.execute('SELECT session_id, text, image_path, image_prompt FROM posts WHERE status = "pending" ORDER BY created_at ASC')
-        return [{'session_id': row[0], 'text': row[1], 'image_path': row[2], 'image_prompt': row[3]} for row in cursor.fetchall()]
-
-# ======================== КОНФИГУРАЦИЯ =========================
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")          # ID канала
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")                # Ваш личный ID
-
-API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
-MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
-
-TOPICS = [
-    "логистические провалы Ozon: затраты, сроки доставки, убытки",
-    "штрафы и возвраты Wildberries: как компания зарабатывает на продавцах",
-    "долговая нагрузка Магнита: кредиты, проценты, соотношение долга к EBITDA",
-    "маркетинговые расходы Ozon: сколько тратят на привлечение клиентов и окупается ли это",
-    "технологические проблемы Wildberries: баги, сбои, инвестиции в IT",
-    "стратегия экспансии Магнита: открытие и закрытие магазинов, эффективность"
-]
-
-PROVIDER_CONFIG = {
-    "openai": {
-        "url": "https://api.chatanywhere.tech/v1/chat/completions",
-        "default_model": "deepseek-v3",
-        "headers": lambda key: {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}"
-        }
-    },
-    "openrouter": {
-        "url": "https://openrouter.ai/api/v1/chat/completions",
-        "default_model": "deepseek/deepseek-chat:free",
-        "headers": lambda key: {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}",
-            "HTTP-Referer": "https://skeptik-bot.onrender.com",
-            "X-Title": "Скептик с EBITDA"
-        }
-    }
-}
-
-config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["openrouter"])
-API_URL = config["url"]
-API_HEADERS_FUNC = config["headers"]
-API_DEFAULT_MODEL = config["default_model"]
-if not MODEL_NAME:
-    MODEL_NAME = API_DEFAULT_MODEL
-
-# ======================== ФУНКЦИЯ ОЧИСТКИ =========================
+# ======================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =========================
 def clean_text(text):
     text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
     text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
@@ -126,7 +121,6 @@ def clean_text(text):
     return text.strip()
 
 def close_html_tags(text):
-    """Закрывает незакрытые HTML-теги в конце текста"""
     stack = []
     for tag in re.findall(r'<([bius]+)>', text):
         stack.append(tag)
@@ -147,9 +141,9 @@ def generate_post():
                 "role": "system",
                 "content": (
                     "Ты — автор канала «Скептик с EBITDA».\n"
-                    "Стиль: дерзкий, саркастичный, с конкретными цифрами из отчётности.\n"
-                    "НЕ выводи внутренние рассуждения, теги <think> — только готовый пост.\n"
-                    "Пост должен быть длиной 400–500 символов (4–5 коротких абзацев).\n"
+                    "Стиль: дерзкий, саркастичный, с конкретными цифрами.\n"
+                    "НЕ выводи <think>, рассуждения — только готовый пост.\n"
+                    "Пост длиной 400–500 символов (4–5 абзацев).\n"
                     "Используй HTML: <b>жирный</b> для цифр, эмодзи в начале абзацев.\n"
                     "В конце — Action Item с ✅ (одно предложение).\n"
                     "После текста === и описание картинки (англ., 3–4 слова)."
@@ -164,31 +158,18 @@ def generate_post():
         "max_tokens": 350
     }
 
-    print(f"[DEBUG] Provider: {API_PROVIDER}, Model: {MODEL_NAME}")
-    print(f"[DEBUG] URL: {API_URL}")
-
     for attempt in range(3):
         try:
             response = requests.post(API_URL, headers=headers, json=payload, timeout=60)
-            status = response.status_code
-            response_text = response.text
-
-            print(f"[DEBUG] Status: {status}")
-            print(f"[DEBUG] Response (first 500 chars): {response_text[:500]}")
-
-            if status != 200:
-                raise Exception(f"API вернул {status}: {response_text}")
-
+            if response.status_code != 200:
+                raise Exception(f"API вернул {response.status_code}: {response.text}")
             data = response.json()
             if "choices" not in data or not data["choices"]:
-                raise Exception(f"Ответ не содержит 'choices': {data}")
-
+                raise Exception("Ответ не содержит choices")
             full_text = data["choices"][0]["message"]["content"]
             if not full_text:
-                raise Exception("Пустой ответ от API")
-
+                raise Exception("Пустой ответ")
             full_text = clean_text(full_text)
-
             if "===" in full_text:
                 parts = full_text.split("===", 1)
                 post_text = parts[0].strip()
@@ -196,35 +177,29 @@ def generate_post():
             else:
                 post_text = full_text.strip()
                 image_prompt = ""
-
             if len(image_prompt) < 10:
                 image_prompt = "business finance sarcastic illustration"
-                print("[WARN] Промпт для картинки был пуст, использован стандартный")
-
             return post_text, image_prompt
-
         except requests.exceptions.Timeout:
-            print(f"[WARN] Попытка {attempt+1} из 3: таймаут, повтор через 5 сек...")
+            print(f"[WARN] Попытка {attempt+1} таймаут, повтор...")
             time.sleep(5)
         except Exception as e:
-            print(f"[ERROR] Ошибка на попытке {attempt+1}: {e}")
+            print(f"[ERROR] Попытка {attempt+1}: {e}")
             if attempt == 2:
                 raise
             time.sleep(3)
-
-    raise Exception("Не удалось получить ответ от API после 3 попыток")
+    raise Exception("Не удалось получить ответ от API")
 
 # ======================== ГЕНЕРАЦИЯ КАРТИНКИ =========================
 def generate_image(prompt):
     try:
         unique_suffix = f" {random.randint(1, 100000)}"
         full_prompt = prompt + unique_suffix
-        encoded_prompt = urllib.parse.quote(full_prompt)
+        encoded = urllib.parse.quote(full_prompt)
         seed = random.randint(1, 999999)
         timestamp = int(time.time())
-        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1200&height=800&seed={seed}&t={timestamp}"
+        url = f"https://image.pollinations.ai/prompt/{encoded}?width=1200&height=800&seed={seed}&t={timestamp}"
         print(f"[DEBUG] Pollinations URL: {url}")
-
         response = requests.get(url, timeout=30)
         if response.status_code == 200:
             with open("temp_image.jpg", "wb") as f:
@@ -237,9 +212,15 @@ def generate_image(prompt):
         print(f"[ERROR] Pollinations error: {e}")
         return None
 
-# ======================== ПУБЛИКАЦИЯ В КАНАЛ =========================
+# ======================== ПУБЛИКАЦИЯ В КАНАЛ (С ДИАГНОСТИКОЙ) =========================
 def publish_to_telegram(text, image_path):
     try:
+        # Проверяем, существует ли файл
+        if not os.path.exists(image_path):
+            print(f"[ERROR] Файл {image_path} не найден")
+            return False
+
+        # Обрезаем текст до 750 символов с закрытием тегов
         if len(text) > 750:
             text = text[:750]
             last_space = text.rfind(' ')
@@ -247,10 +228,24 @@ def publish_to_telegram(text, image_path):
                 text = text[:last_space] + "… Читать далее в канале."
             else:
                 text = text + "… Читать далее в канале."
-            print(f"[WARN] Текст обрезан до {len(text)} символов")
-
         text = close_html_tags(text)
 
+        # Проверяем права бота в канале
+        check_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getChatMember"
+        check_params = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "user_id": "me"  # проверяем самого бота
+        }
+        check_response = requests.get(check_url, params=check_params, timeout=10)
+        if check_response.status_code == 200:
+            check_data = check_response.json()
+            if check_data.get("ok") and check_data.get("result", {}).get("status") not in ["administrator", "creator"]:
+                print("[ERROR] Бот не является администратором канала!")
+                return False
+        else:
+            print(f"[ERROR] Не удалось проверить права: {check_response.text}")
+
+        # Отправляем фото
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         with open(image_path, "rb") as photo:
             files = {"photo": photo}
@@ -260,17 +255,20 @@ def publish_to_telegram(text, image_path):
                 "parse_mode": "HTML"
             }
             response = requests.post(url, files=files, data=data, timeout=30)
-        if response.status_code != 200:
+        if response.status_code == 200:
+            print("[DEBUG] Публикация успешна")
+            return True
+        else:
             print(f"[ERROR] Telegram ответ: {response.text}")
-        return response.status_code == 200
+            return False
     except Exception as e:
         print(f"[ERROR] Ошибка публикации: {e}")
+        traceback.print_exc()
         return False
 
-# ======================== ОТПРАВКА НА МОДЕРАЦИЮ =========================
+# ======================== ОТПРАВКА НА ПРОВЕРКУ =========================
 def send_for_approval(post_text, image_path, image_prompt, session_id):
     save_post(session_id, post_text, image_path, image_prompt)
-
     caption = f"📝 Новый пост на проверку:\n\n{post_text}"
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
@@ -299,34 +297,36 @@ def send_for_approval(post_text, image_path, image_prompt, session_id):
         print(f"[ERROR] Ошибка отправки на модерацию: {e}")
         return False
 
-# ======================== ОБРАБОТКА CALLBACK =========================
+# ======================== ОБРАБОТЧИК КНОПОК =========================
 def process_callback(callback_data, chat_id, message_id):
     parts = callback_data.split('_', 1)
     if len(parts) != 2:
         return
     action, session_id = parts
     print(f"[DEBUG] Callback action={action}, session_id={session_id}")
-
     post_data = get_post(session_id)
     if not post_data:
-        answer_callback(chat_id, message_id, "⏳ Этот черновик уже обработан или устарел.")
+        answer_callback(chat_id, message_id, "⏳ Черновик устарел")
         return
-
     if action == "approve":
-        ok = publish_to_telegram(post_data["text"], post_data["image_path"])
-        if ok:
-            update_post_status(session_id, 'published')
-            answer_callback(chat_id, message_id, "✅ Пост успешно опубликован!")
-        else:
-            answer_callback(chat_id, message_id, "❌ Ошибка публикации, проверьте логи.")
-
+        # Пробуем опубликовать до 3 раз
+        for attempt in range(3):
+            ok = publish_to_telegram(post_data["text"], post_data["image_path"])
+            if ok:
+                update_post_status(session_id, 'published')
+                answer_callback(chat_id, message_id, "✅ Пост опубликован!")
+                return
+            else:
+                print(f"[WARN] Попытка публикации {attempt+1} не удалась")
+                time.sleep(2)
+        answer_callback(chat_id, message_id, "❌ Не удалось опубликовать пост. Проверьте логи.")
     elif action == "regenerate":
-        answer_callback(chat_id, message_id, "🔄 Генерирую новый вариант...")
+        answer_callback(chat_id, message_id, "🔄 Генерирую новый...")
         try:
             new_text, new_prompt = generate_post()
             new_image_path = generate_image(new_prompt)
             if not new_image_path:
-                answer_callback(chat_id, message_id, "❌ Не удалось сгенерировать картинку.")
+                answer_callback(chat_id, message_id, "❌ Ошибка генерации картинки")
                 return
             new_session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
             delete_post(session_id)
@@ -334,22 +334,17 @@ def process_callback(callback_data, chat_id, message_id):
             answer_callback(chat_id, message_id, "🔄 Новый пост отправлен на проверку.")
         except Exception as e:
             answer_callback(chat_id, message_id, f"❌ Ошибка перегенерации: {str(e)[:100]}")
-
     elif action == "reject":
         delete_post(session_id)
-        answer_callback(chat_id, message_id, "❌ Пост отклонён и удалён.")
+        answer_callback(chat_id, message_id, "❌ Пост отклонён.")
 
 def answer_callback(chat_id, message_id, text):
     try:
         send_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        send_data = {
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "HTML"
-        }
+        send_data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
         requests.post(send_url, json=send_data, timeout=10)
     except Exception as e:
-        print(f"[ERROR] Ошибка отправки ответа на callback: {e}")
+        print(f"[ERROR] Ошибка ответа на callback: {e}")
 
 # ======================== ПОЛЛИНГ ОБНОВЛЕНИЙ =========================
 def poll_updates():
@@ -357,19 +352,15 @@ def poll_updates():
     while True:
         try:
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
-            params = {
-                "offset": offset,
-                "timeout": 30,
-                "allowed_updates": ["callback_query"]
-            }
+            params = {"offset": offset, "timeout": 30, "allowed_updates": ["callback_query"]}
             response = requests.get(url, params=params, timeout=35)
             if response.status_code != 200:
-                print(f"[ERROR] getUpdates вернул {response.status_code}")
+                print(f"[ERROR] getUpdates ошибка {response.status_code}")
                 time.sleep(5)
                 continue
             data = response.json()
             if not data.get("ok"):
-                print(f"[ERROR] getUpdates ошибка: {data}")
+                print(f"[ERROR] getUpdates: {data}")
                 time.sleep(5)
                 continue
             for update in data.get("result", []):
@@ -381,39 +372,34 @@ def poll_updates():
                         chat_id = cb["message"]["chat"]["id"]
                         message_id = cb["id"]
                         process_callback(cb_data, chat_id, message_id)
+                        # Отвечаем на callback, чтобы кнопка перестала крутиться
                         try:
                             answer_callback_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery"
-                            answer_data = {
-                                "callback_query_id": cb["id"],
-                                "text": "Обрабатываю..."
-                            }
+                            answer_data = {"callback_query_id": cb["id"], "text": "Обрабатываю..."}
                             requests.post(answer_callback_url, json=answer_data, timeout=10)
                         except:
                             pass
         except Exception as e:
-            print(f"[ERROR] Ошибка в poll_updates: {e}")
+            print(f"[ERROR] poll_updates: {e}")
             time.sleep(5)
 
-# ======================== ОСНОВНАЯ ЗАДАЧА =========================
+# ======================== ОСНОВНАЯ ЗАДАЧА (9:55) =========================
 def job():
-    """Генерация поста и отправка на проверку (в 9:55)"""
     print(f"[{datetime.now()}] Генерация поста для проверки...")
     try:
         post_text, image_prompt = generate_post()
-        print(f"[{datetime.now()}] Текст получен, промпт: {image_prompt[:50]}...")
         image_path = generate_image(image_prompt)
         if not image_path:
-            print(f"[{datetime.now()}] ОШИБКА: не удалось сгенерировать картинку")
+            print("[ERROR] Не удалось сгенерировать картинку")
             return
-
         session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
-        success = send_for_approval(post_text, image_path, image_prompt, session_id)
-        if success:
+        ok = send_for_approval(post_text, image_path, image_prompt, session_id)
+        if ok:
             print(f"[{datetime.now()}] ✅ Пост отправлен на модерацию (ID: {session_id})")
         else:
             print(f"[{datetime.now()}] ❌ Ошибка отправки на модерацию")
     except Exception as e:
-        print(f"[{datetime.now()}] ❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
+        print(f"[ERROR] job: {e}")
         traceback.print_exc()
 
 # ======================== ВЕБ-СЕРВЕР =========================
@@ -474,7 +460,6 @@ threading.Thread(target=keep_alive, daemon=True).start()
 threading.Thread(target=poll_updates, daemon=True).start()
 
 # ======================== РАСПИСАНИЕ =========================
-# В 9:55 генерируем и отправляем на проверку
 schedule.every().day.at("09:55").do(job)
 
 print("Бот запущен. Ожидание расписания...")
