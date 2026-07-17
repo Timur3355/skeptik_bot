@@ -17,12 +17,11 @@ import re
 # ======================== КОНФИГУРАЦИЯ =========================
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")          # ID канала
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")                # Ваш личный ID
 
-# Принудительно используем ChatAnywhere (openai)
-API_PROVIDER = "openai"  # или можно оставить переменную, но в конфиге openai должен быть первым
-MODEL_NAME = "gpt-4o-mini"  # бесплатная модель ChatAnywhere
+API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
+MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
 
 TOPICS = [
     "логистические провалы Ozon: затраты, сроки доставки, убытки",
@@ -36,7 +35,7 @@ TOPICS = [
 PROVIDER_CONFIG = {
     "openai": {
         "url": "https://api.chatanywhere.tech/v1/chat/completions",
-        "default_model": "gpt-4o-mini",
+        "default_model": "deepseek-v3",
         "headers": lambda key: {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {key}"
@@ -44,47 +43,31 @@ PROVIDER_CONFIG = {
     },
     "openrouter": {
         "url": "https://openrouter.ai/api/v1/chat/completions",
-        "default_model": "gpt-4o-mini",  # не используется, но оставим
+        "default_model": "deepseek/deepseek-chat:free",
         "headers": lambda key: {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}"
+            "Authorization": f"Bearer {key}",
+            "HTTP-Referer": "https://skeptik-bot.onrender.com",
+            "X-Title": "Скептик с EBITDA"
         }
     }
 }
 
-config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["openai"])
+config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["openrouter"])
 API_URL = config["url"]
 API_HEADERS_FUNC = config["headers"]
 API_DEFAULT_MODEL = config["default_model"]
 if not MODEL_NAME:
     MODEL_NAME = API_DEFAULT_MODEL
 
-pending_posts = {}
+pending_posts = {}  # session_id -> {text, image_path, image_prompt}
 
-# ======================== ОЧИСТКА ТЕКСТА =========================
 def clean_text(text):
     text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
     text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
-    lines = text.split('\n')
-    clean_lines = []
-    start = False
-    for line in lines:
-        if not start and not line.strip():
-            continue
-        if not start and re.match(r'^[\U0001F000-\U0001FFFF]|^<b>|^\d', line.strip()):
-            start = True
-        if start:
-            clean_lines.append(line)
-    if not clean_lines:
-        for i, line in enumerate(lines):
-            if line.strip() and not re.search(r'\?$', line.strip()) and len(line.strip()) > 10:
-                clean_lines = lines[i:]
-                break
-    text = '\n'.join(clean_lines)
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
-# ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
     topic = random.choice(TOPICS)
     print(f"[DEBUG] Выбрана тема: {topic}")
@@ -98,20 +81,20 @@ def generate_post():
                 "content": (
                     "Ты — автор канала «Скептик с EBITDA».\n"
                     "Стиль: дерзкий, саркастичный, с конкретными цифрами из отчётности.\n"
-                    "НЕ выводи внутренние рассуждения, теги <think>, пояснения — только готовый пост.\n"
-                    "Пост должен быть строго до 500 символов (3–4 коротких абзаца).\n"
+                    "НЕ выводи внутренние рассуждения, теги <think> — только готовый пост.\n"
+                    "Пост должен быть длиной 600–700 символов (около 5–6 абзацев).\n"
                     "Используй HTML: <b>жирный</b> для цифр, эмодзи в начале абзацев.\n"
                     "В конце — Action Item с ✅.\n"
-                    "После текста поставь === и краткое описание картинки (на английском, 3–4 слова)."
+                    "После текста === и описание картинки (англ., 3–4 слова)."
                 )
             },
             {
                 "role": "user",
-                "content": f"Напиши короткий пост на тему: {topic}. Используй реальные цифры из последних отчётов."
+                "content": f"Напиши пост на тему: {topic}. Используй реальные цифры из последних отчётов."
             }
         ],
         "temperature": 0.85,
-        "max_tokens": 350
+        "max_tokens": 600
     }
 
     print(f"[DEBUG] Provider: {API_PROVIDER}, Model: {MODEL_NAME}")
@@ -147,10 +130,6 @@ def generate_post():
                 post_text = full_text.strip()
                 image_prompt = ""
 
-            if len(image_prompt) > 200:
-                image_prompt = image_prompt[:200]
-                print("[WARN] Промпт для картинки обрезан до 200 символов")
-
             if len(image_prompt) < 10:
                 image_prompt = "business finance sarcastic illustration"
                 print("[WARN] Промпт для картинки был пуст, использован стандартный")
@@ -168,7 +147,6 @@ def generate_post():
 
     raise Exception("Не удалось получить ответ от API после 3 попыток")
 
-# ======================== ГЕНЕРАЦИЯ КАРТИНКИ =========================
 def generate_image(prompt):
     try:
         unique_suffix = f" {random.randint(1, 100000)}"
@@ -191,11 +169,10 @@ def generate_image(prompt):
         print(f"[ERROR] Pollinations error: {e}")
         return None
 
-# ======================== ПУБЛИКАЦИЯ =========================
 def publish_to_telegram(text, image_path):
     try:
-        if len(text) > 750:
-            text = text[:750] + "… Читать далее в канале."
+        if len(text) > 900:
+            text = text[:900] + "… Читать далее в канале."
             print(f"[WARN] Текст обрезан до {len(text)} символов")
 
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
@@ -214,7 +191,6 @@ def publish_to_telegram(text, image_path):
         print(f"[ERROR] Ошибка публикации: {e}")
         return False
 
-# ======================== ОТПРАВКА НА МОДЕРАЦИЮ =========================
 def send_for_approval(post_text, image_path, image_prompt, session_id):
     caption = f"📝 Новый пост на проверку:\n\n{post_text}"
     try:
@@ -270,12 +246,12 @@ def job():
         print(f"[{datetime.now()}] ❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
         traceback.print_exc()
 
-# ======================== ОБРАБОТЧИК КНОПОК =========================
 def process_callback(callback_data, chat_id, message_id):
     parts = callback_data.split('_', 1)
     if len(parts) != 2:
         return
     action, session_id = parts
+    print(f"[DEBUG] Callback action={action}, session_id={session_id}, pending keys={list(pending_posts.keys())}")
     if session_id not in pending_posts:
         answer_callback(chat_id, message_id, "⏳ Этот черновик уже обработан или устарел.")
         return
@@ -421,7 +397,7 @@ def keep_alive():
 
 threading.Thread(target=keep_alive, daemon=True).start()
 
-# ======================== ПОЛЛИНГ =========================
+# ======================== ЗАПУСК ПОЛЛИНГА =========================
 threading.Thread(target=poll_updates, daemon=True).start()
 
 # ======================== РАСПИСАНИЕ =========================
