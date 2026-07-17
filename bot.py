@@ -21,8 +21,10 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
 API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
-# Меняем модель на гарантированно бесплатную Gemini
-MODEL_NAME = "google/gemini-2.0-flash-exp:free"
+# Устанавливаем модель через переменную окружения MODEL_NAME
+# Для ChatAnywhere: gpt-4o-mini (30 запросов/день)
+# Для OpenRouter: microsoft/phi-3-mini-128k-instruct:free (50-100/день)
+MODEL_NAME = os.getenv("MODEL_NAME", "microsoft/phi-3-mini-128k-instruct:free")
 
 TOPICS = [
     "логистические провалы Ozon: затраты, сроки доставки, убытки",
@@ -44,7 +46,7 @@ PROVIDER_CONFIG = {
     },
     "openrouter": {
         "url": "https://openrouter.ai/api/v1/chat/completions",
-        "default_model": "google/gemini-2.0-flash-exp:free",
+        "default_model": "microsoft/phi-3-mini-128k-instruct:free",
         "headers": lambda key: {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {key}"
