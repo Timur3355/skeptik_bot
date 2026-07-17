@@ -21,14 +21,8 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
 API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
-
-# Жёстко задаём правильную модель, игнорируя возможную невалидную переменную
-# Если переменная MODEL_NAME задана и содержит "/", используем её, иначе — дефолт
-user_model = os.getenv("MODEL_NAME", "")
-if "/" in user_model:
-    MODEL_NAME = user_model
-else:
-    MODEL_NAME = "deepseek/deepseek-chat:free"  # всегда корректный ID
+# Меняем модель на гарантированно бесплатную Gemini
+MODEL_NAME = "google/gemini-2.0-flash-exp:free"
 
 TOPICS = [
     "логистические провалы Ozon: затраты, сроки доставки, убытки",
@@ -42,7 +36,7 @@ TOPICS = [
 PROVIDER_CONFIG = {
     "openai": {
         "url": "https://api.chatanywhere.tech/v1/chat/completions",
-        "default_model": "deepseek-v3",
+        "default_model": "gpt-4o-mini",
         "headers": lambda key: {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {key}"
@@ -50,7 +44,7 @@ PROVIDER_CONFIG = {
     },
     "openrouter": {
         "url": "https://openrouter.ai/api/v1/chat/completions",
-        "default_model": "deepseek/deepseek-chat:free",
+        "default_model": "google/gemini-2.0-flash-exp:free",
         "headers": lambda key: {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {key}"
@@ -62,9 +56,7 @@ config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["openrouter"])
 API_URL = config["url"]
 API_HEADERS_FUNC = config["headers"]
 API_DEFAULT_MODEL = config["default_model"]
-
-# Если модель не содержит "/", то используем дефолтную из конфига
-if "/" not in MODEL_NAME:
+if not MODEL_NAME:
     MODEL_NAME = API_DEFAULT_MODEL
 
 pending_posts = {}
