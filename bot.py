@@ -82,9 +82,9 @@ def generate_post():
                     "Ты — автор канала «Скептик с EBITDA».\n"
                     "Стиль: дерзкий, саркастичный, с конкретными цифрами из отчётности.\n"
                     "НЕ выводи внутренние рассуждения, теги <think> — только готовый пост.\n"
-                    "Пост должен быть длиной 600–700 символов (около 5–6 абзацев).\n"
+                    "Пост должен быть длиной 500–600 символов (4–5 абзацев).\n"
                     "Используй HTML: <b>жирный</b> для цифр, эмодзи в начале абзацев.\n"
-                    "В конце — Action Item с ✅.\n"
+                    "В конце — Action Item, строго одно предложение (не более 50 символов), начинается с ✅.\n"
                     "После текста === и описание картинки (англ., 3–4 слова)."
                 )
             },
@@ -94,7 +94,7 @@ def generate_post():
             }
         ],
         "temperature": 0.85,
-        "max_tokens": 600
+        "max_tokens": 450
     }
 
     print(f"[DEBUG] Provider: {API_PROVIDER}, Model: {MODEL_NAME}")
@@ -171,8 +171,8 @@ def generate_image(prompt):
 
 def publish_to_telegram(text, image_path):
     try:
-        if len(text) > 900:
-            text = text[:900] + "… Читать далее в канале."
+        if len(text) > 950:
+            text = text[:950] + "… Читать далее в канале."
             print(f"[WARN] Текст обрезан до {len(text)} символов")
 
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
