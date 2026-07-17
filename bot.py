@@ -13,12 +13,70 @@ import traceback
 import json
 import random
 import re
+import sqlite3
+from contextlib import closing
+
+# ======================== ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ =========================
+DB_PATH = "posts.db"
+
+def init_db():
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS posts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT UNIQUE,
+                text TEXT,
+                image_path TEXT,
+                image_prompt TEXT,
+                status TEXT DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                published_at TIMESTAMP
+            )
+        ''')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON posts(session_id)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_status ON posts(status)')
+        conn.commit()
+
+init_db()
+
+def save_post(session_id, text, image_path, image_prompt):
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        conn.execute(
+            'INSERT OR REPLACE INTO posts (session_id, text, image_path, image_prompt, status, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+            (session_id, text, image_path, image_prompt, 'pending', datetime.now().isoformat())
+        )
+        conn.commit()
+
+def get_post(session_id):
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        cursor = conn.execute('SELECT text, image_path, image_prompt, status FROM posts WHERE session_id = ?', (session_id,))
+        row = cursor.fetchone()
+        if row:
+            return {'text': row[0], 'image_path': row[1], 'image_prompt': row[2], 'status': row[3]}
+        return None
+
+def update_post_status(session_id, status):
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        conn.execute('UPDATE posts SET status = ? WHERE session_id = ?', (status, session_id))
+        if status == 'published':
+            conn.execute('UPDATE posts SET published_at = ? WHERE session_id = ?', (datetime.now().isoformat(), session_id))
+        conn.commit()
+
+def delete_post(session_id):
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        conn.execute('DELETE FROM posts WHERE session_id = ?', (session_id,))
+        conn.commit()
+
+def get_pending_posts():
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        cursor = conn.execute('SELECT session_id, text, image_path, image_prompt FROM posts WHERE status = "pending" ORDER BY created_at ASC')
+        return [{'session_id': row[0], 'text': row[1], 'image_path': row[2], 'image_prompt': row[3]} for row in cursor.fetchall()]
 
 # ======================== КОНФИГУРАЦИЯ =========================
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")          # ID канала
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")                # Ваш личный ID
 
 API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
 MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
@@ -35,7 +93,7 @@ TOPICS = [
 PROVIDER_CONFIG = {
     "openai": {
         "url": "https://api.chatanywhere.tech/v1/chat/completions",
-        "default_model": "gpt-4o-mini",
+        "default_model": "deepseek-v3",
         "headers": lambda key: {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {key}"
@@ -60,8 +118,7 @@ API_DEFAULT_MODEL = config["default_model"]
 if not MODEL_NAME:
     MODEL_NAME = API_DEFAULT_MODEL
 
-pending_posts = {}
-
+# ======================== ФУНКЦИЯ ОЧИСТКИ =========================
 def clean_text(text):
     text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
     text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
@@ -77,18 +134,7 @@ def close_html_tags(text):
         text += f'</{tag}>'
     return text
 
-def truncate_text(text, max_len=750):
-    """Обрезает текст до max_len символов, стараясь не разрывать слова, и добавляет многоточие"""
-    if len(text) <= max_len:
-        return text
-    truncated = text[:max_len]
-    last_space = truncated.rfind(' ')
-    if last_space > 0:
-        truncated = truncated[:last_space] + "… Читать далее в канале."
-    else:
-        truncated = truncated + "… Читать далее в канале."
-    return close_html_tags(truncated)
-
+# ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
     topic = random.choice(TOPICS)
     print(f"[DEBUG] Выбрана тема: {topic}")
@@ -168,6 +214,7 @@ def generate_post():
 
     raise Exception("Не удалось получить ответ от API после 3 попыток")
 
+# ======================== ГЕНЕРАЦИЯ КАРТИНКИ =========================
 def generate_image(prompt):
     try:
         unique_suffix = f" {random.randint(1, 100000)}"
@@ -190,9 +237,20 @@ def generate_image(prompt):
         print(f"[ERROR] Pollinations error: {e}")
         return None
 
+# ======================== ПУБЛИКАЦИЯ В КАНАЛ =========================
 def publish_to_telegram(text, image_path):
     try:
-        text = truncate_text(text, max_len=750)
+        if len(text) > 750:
+            text = text[:750]
+            last_space = text.rfind(' ')
+            if last_space > 0:
+                text = text[:last_space] + "… Читать далее в канале."
+            else:
+                text = text + "… Читать далее в канале."
+            print(f"[WARN] Текст обрезан до {len(text)} символов")
+
+        text = close_html_tags(text)
+
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         with open(image_path, "rb") as photo:
             files = {"photo": photo}
@@ -209,10 +267,11 @@ def publish_to_telegram(text, image_path):
         print(f"[ERROR] Ошибка публикации: {e}")
         return False
 
+# ======================== ОТПРАВКА НА МОДЕРАЦИЮ =========================
 def send_for_approval(post_text, image_path, image_prompt, session_id):
-    # Обрезаем текст для модерации, оставляя запас для префикса
-    truncated_text = truncate_text(post_text, max_len=650)
-    caption = f"📝 Новый пост на проверку:\n\n{truncated_text}"
+    save_post(session_id, post_text, image_path, image_prompt)
+
+    caption = f"📝 Новый пост на проверку:\n\n{post_text}"
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         with open(image_path, "rb") as photo:
@@ -240,50 +299,26 @@ def send_for_approval(post_text, image_path, image_prompt, session_id):
         print(f"[ERROR] Ошибка отправки на модерацию: {e}")
         return False
 
-def job():
-    print(f"[{datetime.now()}] Генерация поста...")
-    try:
-        post_text, image_prompt = generate_post()
-        print(f"[{datetime.now()}] Текст получен, промпт: {image_prompt[:50]}...")
-        image_path = generate_image(image_prompt)
-        if not image_path:
-            print(f"[{datetime.now()}] ОШИБКА: не удалось сгенерировать картинку")
-            return
-
-        session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
-        pending_posts[session_id] = {
-            "text": post_text,
-            "image_path": image_path,
-            "image_prompt": image_prompt
-        }
-        success = send_for_approval(post_text, image_path, image_prompt, session_id)
-        if success:
-            print(f"[{datetime.now()}] ✅ Пост отправлен на модерацию (ID: {session_id})")
-        else:
-            print(f"[{datetime.now()}] ❌ Ошибка отправки на модерацию")
-            pending_posts.pop(session_id, None)
-    except Exception as e:
-        print(f"[{datetime.now()}] ❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
-        traceback.print_exc()
-
+# ======================== ОБРАБОТКА CALLBACK =========================
 def process_callback(callback_data, chat_id, message_id):
     parts = callback_data.split('_', 1)
     if len(parts) != 2:
         return
     action, session_id = parts
-    print(f"[DEBUG] Callback action={action}, session_id={session_id}, pending keys={list(pending_posts.keys())}")
-    if session_id not in pending_posts:
+    print(f"[DEBUG] Callback action={action}, session_id={session_id}")
+
+    post_data = get_post(session_id)
+    if not post_data:
         answer_callback(chat_id, message_id, "⏳ Этот черновик уже обработан или устарел.")
         return
 
-    draft = pending_posts[session_id]
     if action == "approve":
-        ok = publish_to_telegram(draft["text"], draft["image_path"])
+        ok = publish_to_telegram(post_data["text"], post_data["image_path"])
         if ok:
+            update_post_status(session_id, 'published')
             answer_callback(chat_id, message_id, "✅ Пост успешно опубликован!")
         else:
             answer_callback(chat_id, message_id, "❌ Ошибка публикации, проверьте логи.")
-        pending_posts.pop(session_id, None)
 
     elif action == "regenerate":
         answer_callback(chat_id, message_id, "🔄 Генерирую новый вариант...")
@@ -294,19 +329,14 @@ def process_callback(callback_data, chat_id, message_id):
                 answer_callback(chat_id, message_id, "❌ Не удалось сгенерировать картинку.")
                 return
             new_session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
-            pending_posts[new_session_id] = {
-                "text": new_text,
-                "image_path": new_image_path,
-                "image_prompt": new_prompt
-            }
+            delete_post(session_id)
             send_for_approval(new_text, new_image_path, new_prompt, new_session_id)
-            pending_posts.pop(session_id, None)
             answer_callback(chat_id, message_id, "🔄 Новый пост отправлен на проверку.")
         except Exception as e:
             answer_callback(chat_id, message_id, f"❌ Ошибка перегенерации: {str(e)[:100]}")
 
     elif action == "reject":
-        pending_posts.pop(session_id, None)
+        delete_post(session_id)
         answer_callback(chat_id, message_id, "❌ Пост отклонён и удалён.")
 
 def answer_callback(chat_id, message_id, text):
@@ -321,6 +351,7 @@ def answer_callback(chat_id, message_id, text):
     except Exception as e:
         print(f"[ERROR] Ошибка отправки ответа на callback: {e}")
 
+# ======================== ПОЛЛИНГ ОБНОВЛЕНИЙ =========================
 def poll_updates():
     offset = 0
     while True:
@@ -362,6 +393,28 @@ def poll_updates():
         except Exception as e:
             print(f"[ERROR] Ошибка в poll_updates: {e}")
             time.sleep(5)
+
+# ======================== ОСНОВНАЯ ЗАДАЧА =========================
+def job():
+    """Генерация поста и отправка на проверку (в 9:55)"""
+    print(f"[{datetime.now()}] Генерация поста для проверки...")
+    try:
+        post_text, image_prompt = generate_post()
+        print(f"[{datetime.now()}] Текст получен, промпт: {image_prompt[:50]}...")
+        image_path = generate_image(image_prompt)
+        if not image_path:
+            print(f"[{datetime.now()}] ОШИБКА: не удалось сгенерировать картинку")
+            return
+
+        session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
+        success = send_for_approval(post_text, image_path, image_prompt, session_id)
+        if success:
+            print(f"[{datetime.now()}] ✅ Пост отправлен на модерацию (ID: {session_id})")
+        else:
+            print(f"[{datetime.now()}] ❌ Ошибка отправки на модерацию")
+    except Exception as e:
+        print(f"[{datetime.now()}] ❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
+        traceback.print_exc()
 
 # ======================== ВЕБ-СЕРВЕР =========================
 class HealthHandler(BaseHTTPRequestHandler):
@@ -421,7 +474,8 @@ threading.Thread(target=keep_alive, daemon=True).start()
 threading.Thread(target=poll_updates, daemon=True).start()
 
 # ======================== РАСПИСАНИЕ =========================
-schedule.every().day.at("10:00").do(job)
+# В 9:55 генерируем и отправляем на проверку
+schedule.every().day.at("09:55").do(job)
 
 print("Бот запущен. Ожидание расписания...")
 print(f"Провайдер: {API_PROVIDER}, Модель: {MODEL_NAME}")
