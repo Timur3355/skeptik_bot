@@ -20,9 +20,9 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
-API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
-# Принудительно устанавливаем openrouter/free, игнорируем любую другую модель
-MODEL_NAME = "openrouter/free"  # жёстко, не переопределяется через окружение
+# Принудительно используем openrouter/free, игнорируем любые переменные
+API_PROVIDER = "openrouter"  # жестко
+MODEL_NAME = "openrouter/free"  # жестко, не переопределяется
 
 TOPICS = [
     "логистические провалы Ozon: затраты, сроки доставки, убытки",
@@ -34,17 +34,8 @@ TOPICS = [
 ]
 
 PROVIDER_CONFIG = {
-    "openai": {
-        "url": "https://api.chatanywhere.tech/v1/chat/completions",
-        "default_model": "deepseek-v3",
-        "headers": lambda key: {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}"
-        }
-    },
     "openrouter": {
         "url": "https://openrouter.ai/api/v1/chat/completions",
-        "default_model": "openrouter/free",  # запасной вариант
         "headers": lambda key: {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {key}"
@@ -52,11 +43,9 @@ PROVIDER_CONFIG = {
     }
 }
 
-config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["openrouter"])
+config = PROVIDER_CONFIG["openrouter"]
 API_URL = config["url"]
 API_HEADERS_FUNC = config["headers"]
-# Принудительно игнорируем default_model из конфига, используем жёстко заданную MODEL_NAME
-# Если нужно, можно оставить как запасной, но мы уже задали MODEL_NAME выше
 
 # ======================== ХРАНИЛИЩЕ ЧЕРНОВИКОВ =========================
 pending_posts = {}
@@ -74,10 +63,11 @@ def generate_post():
     print(f"[DEBUG] Выбрана тема: {topic}")
 
     headers = API_HEADERS_FUNC(DEEPSEEK_API_KEY)
+    # Преобразуем в ASCII для безопасности
     headers = {k: v.encode('ascii', 'ignore').decode('ascii') for k, v in headers.items()}
 
     payload = {
-        "model": MODEL_NAME,  # теперь всегда openrouter/free
+        "model": MODEL_NAME,  # всегда openrouter/free
         "messages": [
             {
                 "role": "system",
@@ -100,7 +90,7 @@ def generate_post():
         "max_tokens": 400
     }
 
-    print(f"[DEBUG] Provider: {API_PROVIDER}, Model: {MODEL_NAME}")
+    print(f"[DEBUG] Provider: openrouter, Model: {MODEL_NAME}")
     print(f"[DEBUG] URL: {API_URL}")
 
     for attempt in range(3):
@@ -404,7 +394,7 @@ threading.Thread(target=poll_updates, daemon=True).start()
 schedule.every().day.at("10:00").do(job)
 
 print("Бот запущен. Ожидание расписания...")
-print(f"Провайдер: {API_PROVIDER}, Модель: {MODEL_NAME}")
+print(f"Провайдер: openrouter, Модель: {MODEL_NAME}")
 print(f"URL: {API_URL}")
 
 while True:
