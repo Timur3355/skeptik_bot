@@ -47,8 +47,8 @@ PROVIDER_CONFIG = {
         "headers": lambda key: {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {key}",
-            "HTTP-Referer": "https://skeptik-bot.onrender.com",
-            "X-Title": "Скептик с EBITDA"
+            "HTTP-Referer": "https://skeptik-bot.onrender.com"
+            # X-Title удалён из-за проблем с кодировкой
         }
     }
 }
@@ -310,6 +310,10 @@ def poll_updates():
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
             params = {"offset": offset, "timeout": 30, "allowed_updates": ["callback_query"]}
             response = requests.get(url, params=params, timeout=35)
+            if response.status_code == 409:
+                print("[WARN] Конфликт в getUpdates, пауза 3 сек...")
+                time.sleep(3)
+                continue
             if response.status_code != 200:
                 print(f"[ERROR] getUpdates вернул {response.status_code}")
                 time.sleep(5)
