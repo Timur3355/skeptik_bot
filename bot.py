@@ -21,8 +21,8 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
 API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
-# Используем бесплатную модель Gemini от Google (доступна на OpenRouter)
-MODEL_NAME = os.getenv("MODEL_NAME", "google/gemini-2.0-flash-lite-preview-02-05:free")
+# Принудительно устанавливаем openrouter/free, игнорируем любую другую модель
+MODEL_NAME = "openrouter/free"  # жёстко, не переопределяется через окружение
 
 TOPICS = [
     "логистические провалы Ozon: затраты, сроки доставки, убытки",
@@ -44,7 +44,7 @@ PROVIDER_CONFIG = {
     },
     "openrouter": {
         "url": "https://openrouter.ai/api/v1/chat/completions",
-        "default_model": "google/gemini-2.0-flash-lite-preview-02-05:free",
+        "default_model": "openrouter/free",  # запасной вариант
         "headers": lambda key: {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {key}"
@@ -55,9 +55,8 @@ PROVIDER_CONFIG = {
 config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["openrouter"])
 API_URL = config["url"]
 API_HEADERS_FUNC = config["headers"]
-API_DEFAULT_MODEL = config["default_model"]
-if not MODEL_NAME:
-    MODEL_NAME = API_DEFAULT_MODEL
+# Принудительно игнорируем default_model из конфига, используем жёстко заданную MODEL_NAME
+# Если нужно, можно оставить как запасной, но мы уже задали MODEL_NAME выше
 
 # ======================== ХРАНИЛИЩЕ ЧЕРНОВИКОВ =========================
 pending_posts = {}
@@ -75,11 +74,10 @@ def generate_post():
     print(f"[DEBUG] Выбрана тема: {topic}")
 
     headers = API_HEADERS_FUNC(DEEPSEEK_API_KEY)
-    # Преобразуем заголовки в ASCII (на случай проблем с кодировкой)
     headers = {k: v.encode('ascii', 'ignore').decode('ascii') for k, v in headers.items()}
 
     payload = {
-        "model": MODEL_NAME,
+        "model": MODEL_NAME,  # теперь всегда openrouter/free
         "messages": [
             {
                 "role": "system",
