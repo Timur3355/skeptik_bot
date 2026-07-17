@@ -17,8 +17,8 @@ import re
 # ======================== КОНФИГУРАЦИЯ =========================
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")          # ID канала
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")                # Ваш личный ID
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
 API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
 MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
@@ -61,7 +61,7 @@ if not MODEL_NAME:
     MODEL_NAME = API_DEFAULT_MODEL
 
 # ======================== ХРАНИЛИЩЕ ЧЕРНОВИКОВ =========================
-pending_posts = {}  # session_id -> {text, image_path, image_prompt}
+pending_posts = {}
 
 # ======================== ФУНКЦИЯ ОЧИСТКИ =========================
 def clean_text(text):
@@ -196,7 +196,6 @@ def publish_to_telegram(text, image_path):
 
 # ======================== ОТПРАВКА НА МОДЕРАЦИЮ =========================
 def send_for_approval(post_text, image_path, image_prompt, session_id):
-    """Отправляет админу пост с кнопками"""
     caption = f"📝 Новый пост на проверку:\n\n{post_text}"
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
@@ -225,7 +224,7 @@ def send_for_approval(post_text, image_path, image_prompt, session_id):
         print(f"[ERROR] Ошибка отправки на модерацию: {e}")
         return False
 
-# ======================== ОСНОВНАЯ ЗАДАЧА (ГЕНЕРАЦИЯ + МОДЕРАЦИЯ) =========================
+# ======================== ОСНОВНАЯ ЗАДАЧА =========================
 def job():
     print(f"[{datetime.now()}] Генерация поста...")
     try:
@@ -236,56 +235,48 @@ def job():
             print(f"[{datetime.now()}] ОШИБКА: не удалось сгенерировать картинку")
             return
 
-        # Генерируем уникальный ID сессии
         session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
-        # Сохраняем черновик
         pending_posts[session_id] = {
             "text": post_text,
             "image_path": image_path,
             "image_prompt": image_prompt
         }
-        # Отправляем админу
         success = send_for_approval(post_text, image_path, image_prompt, session_id)
         if success:
             print(f"[{datetime.now()}] ✅ Пост отправлен на модерацию (ID: {session_id})")
         else:
             print(f"[{datetime.now()}] ❌ Ошибка отправки на модерацию")
-            # Если не удалось отправить, удаляем черновик
             pending_posts.pop(session_id, None)
     except Exception as e:
         print(f"[{datetime.now()}] ❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
         traceback.print_exc()
 
-# ======================== ОБРАБОТЧИК КНОПОК (CALLBACK) =========================
+# ======================== ОБРАБОТЧИК КНОПОК =========================
 def process_callback(callback_data, chat_id, message_id):
-    """Обрабатывает нажатие кнопки"""
     parts = callback_data.split('_', 1)
     if len(parts) != 2:
         return
     action, session_id = parts
     if session_id not in pending_posts:
-        # Отвечаем, что черновик устарел
-        answer_callback(chat_id, message_id, "⏳ Этот черновик уже обработан или устарел.")
+        answer_callback(chat_id, message_id, "⏳ Этот черновик уже обработан.")
         return
 
     draft = pending_posts[session_id]
     if action == "approve":
-        # Публикуем в канал
         ok = publish_to_telegram(draft["text"], draft["image_path"])
         if ok:
-            answer_callback(chat_id, message_id, "✅ Пост успешно опубликован!")
+            answer_callback(chat_id, message_id, "✅ Пост опубликован!")
         else:
-            answer_callback(chat_id, message_id, "❌ Ошибка публикации, проверьте логи.")
+            answer_callback(chat_id, message_id, "❌ Ошибка публикации.")
         pending_posts.pop(session_id, None)
 
     elif action == "regenerate":
-        # Перегенерируем пост
         answer_callback(chat_id, message_id, "🔄 Генерирую новый вариант...")
         try:
             new_text, new_prompt = generate_post()
             new_image_path = generate_image(new_prompt)
             if not new_image_path:
-                answer_callback(chat_id, message_id, "❌ Не удалось сгенерировать картинку.")
+                answer_callback(chat_id, message_id, "❌ Ошибка генерации картинки.")
                 return
             new_session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
             pending_posts[new_session_id] = {
@@ -293,52 +284,31 @@ def process_callback(callback_data, chat_id, message_id):
                 "image_path": new_image_path,
                 "image_prompt": new_prompt
             }
-            # Отправляем новый пост на модерацию
             send_for_approval(new_text, new_image_path, new_prompt, new_session_id)
-            # Удаляем старый черновик
             pending_posts.pop(session_id, None)
-            # Отвечаем админу, что новый пост отправлен
             answer_callback(chat_id, message_id, "🔄 Новый пост отправлен на проверку.")
         except Exception as e:
-            answer_callback(chat_id, message_id, f"❌ Ошибка перегенерации: {str(e)[:100]}")
+            answer_callback(chat_id, message_id, f"❌ Ошибка: {str(e)[:100]}")
 
     elif action == "reject":
         pending_posts.pop(session_id, None)
-        answer_callback(chat_id, message_id, "❌ Пост отклонён и удалён.")
+        answer_callback(chat_id, message_id, "❌ Пост отклонён.")
 
 def answer_callback(chat_id, message_id, text):
-    """Отправляет ответ на callback"""
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery"
-        data = {
-            "callback_query_id": message_id,  # здесь нужен id запроса, но проще использовать отдельный метод
-            "text": text,
-            "show_alert": False
-        }
-        # Но для простоты можно просто отредактировать сообщение или отправить новое
-        # Лучше отправить новое сообщение в чат
-        send_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        send_data = {
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "HTML"
-        }
-        requests.post(send_url, json=send_data, timeout=10)
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+        requests.post(url, json=data, timeout=10)
     except Exception as e:
-        print(f"[ERROR] Ошибка отправки ответа на callback: {e}")
+        print(f"[ERROR] Ошибка отправки ответа: {e}")
 
 # ======================== ПОЛЛИНГ ОБНОВЛЕНИЙ =========================
 def poll_updates():
-    """Поток для получения callback-запросов"""
     offset = 0
     while True:
         try:
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
-            params = {
-                "offset": offset,
-                "timeout": 30,
-                "allowed_updates": ["callback_query"]
-            }
+            params = {"offset": offset, "timeout": 30, "allowed_updates": ["callback_query"]}
             response = requests.get(url, params=params, timeout=35)
             if response.status_code != 200:
                 print(f"[ERROR] getUpdates вернул {response.status_code}")
@@ -356,16 +326,11 @@ def poll_updates():
                     cb_data = cb.get("data")
                     if cb_data:
                         chat_id = cb["message"]["chat"]["id"]
-                        message_id = cb["id"]  # id запроса для answerCallbackQuery
-                        # Обрабатываем callback
+                        message_id = cb["id"]
                         process_callback(cb_data, chat_id, message_id)
-                        # Отвечаем на callback, чтобы кнопка перестала крутиться
                         try:
                             answer_callback_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery"
-                            answer_data = {
-                                "callback_query_id": cb["id"],
-                                "text": "Обрабатываю..."
-                            }
+                            answer_data = {"callback_query_id": cb["id"], "text": "Обрабатываю..."}
                             requests.post(answer_callback_url, json=answer_data, timeout=10)
                         except:
                             pass
@@ -373,7 +338,7 @@ def poll_updates():
             print(f"[ERROR] Ошибка в poll_updates: {e}")
             time.sleep(5)
 
-# ======================== ВЕБ-СЕРВЕР ДЛЯ RENDER =========================
+# ======================== ВЕБ-СЕРВЕР =========================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/test':
@@ -427,7 +392,7 @@ def keep_alive():
 
 threading.Thread(target=keep_alive, daemon=True).start()
 
-# ======================== ЗАПУСК ПОЛЛИНГА В ОТДЕЛЬНОМ ПОТОКЕ =========================
+# ======================== ЗАПУСК ПОЛЛИНГА =========================
 threading.Thread(target=poll_updates, daemon=True).start()
 
 # ======================== РАСПИСАНИЕ =========================
