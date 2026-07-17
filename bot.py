@@ -116,6 +116,7 @@ def delete_post(session_id):
     with closing(sqlite3.connect(DB_PATH)) as conn:
         conn.execute('DELETE FROM posts WHERE session_id = ?', (session_id,))
         conn.commit()
+        print(f"[DEBUG] Пост удалён: session_id={session_id}")
 
 # ======================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =========================
 def clean_text(text):
@@ -139,10 +140,10 @@ def generate_post():
                     "Ты — автор канала «Скептик с EBITDA».\n"
                     "Стиль: дерзкий, саркастичный, с конкретными цифрами.\n"
                     "НЕ выводи <think>, рассуждения — только готовый пост.\n"
-                    "Пост должен быть строго до 400 символов (3–4 коротких абзаца).\n"
+                    "Пост должен быть строго до 350 символов (3–4 коротких абзаца).\n"
                     "Используй эмодзи в начале абзацев (например, 📦, 💰, 📊, ⚠️, 🔥, 📉).\n"
-                    "НЕ используй HTML-теги.\n"
-                    "В конце — Action Item с ✅ (одно короткое предложение).\n"
+                    "НЕ используй HTML-теги (<b>, <i> и т.д.).\n"
+                    "В конце — Action Item с ✅ (одно предложение).\n"
                     "После текста === и описание картинки (англ., 3–4 слова)."
                 )
             },
@@ -152,7 +153,7 @@ def generate_post():
             }
         ],
         "temperature": 0.85,
-        "max_tokens": 220
+        "max_tokens": 180
     }
 
     for attempt in range(3):
@@ -209,22 +210,17 @@ def generate_image(prompt):
         print(f"[ERROR] Pollinations error: {e}")
         return None
 
-# ======================== ПУБЛИКАЦИЯ В КАНАЛ =========================
+# ======================== ПУБЛИКАЦИЯ В КАНАЛ (БЕЗ ОБРЕЗКИ) =========================
 def publish_to_telegram(text, image_path):
     try:
         if not os.path.exists(image_path):
             print(f"[ERROR] Файл {image_path} не найден")
             return False
 
-        # Обрезаем до 1000 символов (оставляем запас 24 символа до лимита 1024)
-        if len(text) > 1000:
-            text = text[:1000]
-            last_space = text.rfind(' ')
-            if last_space > 0:
-                text = text[:last_space] + "… Читать далее в канале."
-            else:
-                text = text + "… Читать далее в канале."
-        print(f"[DEBUG] Длина текста: {len(text)} символов")
+        print(f"[DEBUG] Длина текста перед публикацией: {len(text)} символов")
+        # Проверяем, не превышает ли лимит Telegram (1024)
+        if len(text) > 1024:
+            print(f"[WARN] Текст длиннее 1024 символов ({len(text)}), Telegram может обрезать.")
 
         # Проверяем права бота
         check_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getChatMember"
@@ -244,6 +240,7 @@ def publish_to_telegram(text, image_path):
             data = {
                 "chat_id": TELEGRAM_CHAT_ID,
                 "caption": text
+                # parse_mode НЕ используем
             }
             response = requests.post(url, files=files, data=data, timeout=30)
         if response.status_code == 200:
@@ -260,14 +257,6 @@ def publish_to_telegram(text, image_path):
 # ======================== ОТПРАВКА НА ПРОВЕРКУ =========================
 def send_for_approval(post_text, image_path, image_prompt, session_id):
     save_post(session_id, post_text, image_path, image_prompt)
-    # Для личного сообщения тоже обрезаем
-    if len(post_text) > 1000:
-        post_text = post_text[:1000]
-        last_space = post_text.rfind(' ')
-        if last_space > 0:
-            post_text = post_text[:last_space] + "… Читать далее в канале."
-        else:
-            post_text = post_text + "… Читать далее в канале."
     caption = f"📝 Новый пост на проверку:\n\n{post_text}"
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
@@ -304,7 +293,7 @@ def process_callback(callback_data, chat_id, message_id):
     print(f"[DEBUG] Callback: action={action}, session_id={session_id}")
     post_data = get_post(session_id)
     if not post_data:
-        # Автоматическая перегенерация при потере черновика
+        # Автоматически генерируем новый пост
         answer_callback(chat_id, message_id, "🔄 Черновик устарел, генерирую новый...")
         try:
             new_text, new_prompt = generate_post()
@@ -320,7 +309,7 @@ def process_callback(callback_data, chat_id, message_id):
         return
 
     if post_data["status"] == "published":
-        answer_callback(chat_id, message_id, "ℹ️ Этот пост уже был опубликован.")
+        answer_callback(chat_id, message_id, "ℹ️ Этот пост уже был опубликован ранее.")
         return
     if post_data["status"] == "rejected":
         answer_callback(chat_id, message_id, "ℹ️ Этот пост был отклонён.")
