@@ -20,10 +20,7 @@ from contextlib import closing
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")          # не обязателен, если модерация выключена
-
-# Модерация: по умолчанию выключена
-MODERATION_ENABLED = os.getenv("MODERATION_ENABLED", "false").lower() == "true"
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
 API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
 MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
@@ -65,7 +62,7 @@ API_DEFAULT_MODEL = config["default_model"]
 if not MODEL_NAME:
     MODEL_NAME = API_DEFAULT_MODEL
 
-# ======================== БАЗА ДАННЫХ (для модерации, не используется при выключенной) =========================
+# ======================== БАЗА ДАННЫХ =========================
 DB_PATH = "posts.db"
 
 def init_db():
@@ -131,17 +128,6 @@ def close_html_tags(text):
         text += f'</{tag}>'
     return text
 
-def prepare_caption(text, max_len=750):
-    """Обрезает текст до max_len символов, закрывает HTML-теги"""
-    if len(text) > max_len:
-        text = text[:max_len]
-        last_space = text.rfind(' ')
-        if last_space > 0:
-            text = text[:last_space] + "… Читать далее в канале."
-        else:
-            text = text + "… Читать далее в канале."
-    return close_html_tags(text)
-
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
     topic = random.choice(TOPICS)
@@ -157,7 +143,7 @@ def generate_post():
                     "Ты — автор канала «Скептик с EBITDA».\n"
                     "Стиль: дерзкий, саркастичный, с конкретными цифрами.\n"
                     "НЕ выводи <think>, рассуждения — только готовый пост.\n"
-                    "Пост длиной 400–500 символов (4–5 абзацев).\n"
+                    "Пост должен быть строго до 500 символов (4–5 коротких абзацев).\n"
                     "Используй HTML: <b>жирный</b> для цифр, эмодзи в начале абзацев.\n"
                     "В конце — Action Item с ✅ (одно предложение).\n"
                     "После текста === и описание картинки (англ., 3–4 слова)."
@@ -169,7 +155,7 @@ def generate_post():
             }
         ],
         "temperature": 0.85,
-        "max_tokens": 350
+        "max_tokens": 280  # уменьшено, чтобы текст был короче
     }
 
     for attempt in range(3):
@@ -233,20 +219,28 @@ def publish_to_telegram(text, image_path):
             print(f"[ERROR] Файл {image_path} не найден")
             return False
 
-        text = prepare_caption(text, max_len=750)
+        # Обрезаем до 900 символов (оставляем запас 124 символа до лимита 1024)
+        if len(text) > 900:
+            text = text[:900]
+            last_space = text.rfind(' ')
+            if last_space > 0:
+                text = text[:last_space] + "… Читать далее в канале."
+            else:
+                text = text + "… Читать далее в канале."
+        text = close_html_tags(text)
+        print(f"[DEBUG] Длина текста после обрезки: {len(text)} символов")
 
-        # Проверка прав бота (необязательно, но оставим)
-        try:
-            check_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getChatMember"
-            check_params = {"chat_id": TELEGRAM_CHAT_ID, "user_id": "me"}
-            check_response = requests.get(check_url, params=check_params, timeout=10)
-            if check_response.status_code == 200:
-                check_data = check_response.json()
-                if check_data.get("ok") and check_data.get("result", {}).get("status") not in ["administrator", "creator"]:
-                    print("[ERROR] Бот не администратор канала!")
-                    return False
-        except Exception as e:
-            print(f"[WARN] Не удалось проверить права: {e}")
+        # Проверяем права бота
+        check_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getChatMember"
+        check_params = {"chat_id": TELEGRAM_CHAT_ID, "user_id": "me"}
+        check_response = requests.get(check_url, params=check_params, timeout=10)
+        if check_response.status_code == 200:
+            check_data = check_response.json()
+            if check_data.get("ok") and check_data.get("result", {}).get("status") not in ["administrator", "creator"]:
+                print("[ERROR] Бот не администратор канала!")
+                return False
+        else:
+            print(f"[ERROR] Не удалось проверить права: {check_response.text}")
 
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         with open(image_path, "rb") as photo:
@@ -268,11 +262,18 @@ def publish_to_telegram(text, image_path):
         traceback.print_exc()
         return False
 
-# ======================== ФУНКЦИИ МОДЕРАЦИИ (оставлены, но не используются) =========================
+# ======================== ОТПРАВКА НА ПРОВЕРКУ =========================
 def send_for_approval(post_text, image_path, image_prompt, session_id):
-    caption_text = prepare_caption(post_text, max_len=750)
     save_post(session_id, post_text, image_path, image_prompt)
-    caption = f"📝 Новый пост на проверку:\n\n{caption_text}"
+    # Для проверки тоже обрезаем, чтобы не превысить лимит в личке
+    if len(post_text) > 900:
+        post_text = post_text[:900]
+        last_space = post_text.rfind(' ')
+        if last_space > 0:
+            post_text = post_text[:last_space] + "… Читать далее в канале."
+        else:
+            post_text = post_text + "… Читать далее в канале."
+    caption = f"📝 Новый пост на проверку:\n\n{post_text}"
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         with open(image_path, "rb") as photo:
@@ -300,6 +301,7 @@ def send_for_approval(post_text, image_path, image_prompt, session_id):
         print(f"[ERROR] Ошибка отправки на модерацию: {e}")
         return False
 
+# ======================== ОБРАБОТЧИК КНОПОК =========================
 def process_callback(callback_data, chat_id, message_id):
     parts = callback_data.split('_', 1)
     if len(parts) != 2:
@@ -317,8 +319,9 @@ def process_callback(callback_data, chat_id, message_id):
                 update_post_status(session_id, 'published')
                 answer_callback(chat_id, message_id, "✅ Пост опубликован!")
                 return
-            print(f"[WARN] Попытка публикации {attempt+1} не удалась")
-            time.sleep(2)
+            else:
+                print(f"[WARN] Попытка публикации {attempt+1} не удалась")
+                time.sleep(2)
         answer_callback(chat_id, message_id, "❌ Не удалось опубликовать пост. Проверьте логи.")
     elif action == "regenerate":
         answer_callback(chat_id, message_id, "🔄 Генерирую новый...")
@@ -346,7 +349,7 @@ def answer_callback(chat_id, message_id, text):
     except Exception as e:
         print(f"[ERROR] Ошибка ответа на callback: {e}")
 
-# ======================== ПОЛЛИНГ ОБНОВЛЕНИЙ (оставлен для обратной совместимости) =========================
+# ======================== ПОЛЛИНГ ОБНОВЛЕНИЙ =========================
 def poll_updates():
     offset = 0
     while True:
@@ -382,30 +385,21 @@ def poll_updates():
             print(f"[ERROR] poll_updates: {e}")
             time.sleep(5)
 
-# ======================== ОСНОВНАЯ ЗАДАЧА =========================
+# ======================== ОСНОВНАЯ ЗАДАЧА (9:55) =========================
 def job():
-    print(f"[{datetime.now()}] Генерация поста...")
+    print(f"[{datetime.now()}] Генерация поста для проверки...")
     try:
         post_text, image_prompt = generate_post()
         image_path = generate_image(image_prompt)
         if not image_path:
             print("[ERROR] Не удалось сгенерировать картинку")
             return
-
-        if MODERATION_ENABLED:
-            session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
-            ok = send_for_approval(post_text, image_path, image_prompt, session_id)
-            if ok:
-                print(f"[{datetime.now()}] ✅ Пост отправлен на модерацию (ID: {session_id})")
-            else:
-                print(f"[{datetime.now()}] ❌ Ошибка отправки на модерацию")
+        session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
+        ok = send_for_approval(post_text, image_path, image_prompt, session_id)
+        if ok:
+            print(f"[{datetime.now()}] ✅ Пост отправлен на модерацию (ID: {session_id})")
         else:
-            # Публикуем сразу
-            ok = publish_to_telegram(post_text, image_path)
-            if ok:
-                print(f"[{datetime.now()}] ✅ Пост опубликован в канал!")
-            else:
-                print(f"[{datetime.now()}] ❌ Ошибка публикации")
+            print(f"[{datetime.now()}] ❌ Ошибка отправки на модерацию")
     except Exception as e:
         print(f"[ERROR] job: {e}")
         traceback.print_exc()
@@ -464,11 +458,8 @@ def keep_alive():
 
 threading.Thread(target=keep_alive, daemon=True).start()
 
-# ======================== ЗАПУСК ПОЛЛИНГА (для кнопок, если модерация включена) =========================
-if MODERATION_ENABLED:
-    threading.Thread(target=poll_updates, daemon=True).start()
-else:
-    print("[INFO] Модерация отключена, поллинг не запущен.")
+# ======================== ЗАПУСК ПОЛЛИНГА =========================
+threading.Thread(target=poll_updates, daemon=True).start()
 
 # ======================== РАСПИСАНИЕ =========================
 schedule.every().day.at("09:55").do(job)
@@ -476,7 +467,6 @@ schedule.every().day.at("09:55").do(job)
 print("Бот запущен. Ожидание расписания...")
 print(f"Провайдер: {API_PROVIDER}, Модель: {MODEL_NAME}")
 print(f"URL: {API_URL}")
-print(f"Модерация: {'Включена' if MODERATION_ENABLED else 'Отключена'}")
 
 while True:
     schedule.run_pending()
