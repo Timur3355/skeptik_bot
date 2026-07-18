@@ -223,6 +223,7 @@ def split_text(text, max_len=3900):
     parts = []
     while len(text) > max_len:
         chunk = text[:max_len]
+        # Ищем последнюю точку, восклицание или вопрос
         last_punct = max(chunk.rfind('.'), chunk.rfind('!'), chunk.rfind('?'))
         if last_punct > 0:
             split_pos = last_punct + 1
@@ -250,7 +251,7 @@ def generate_post():
                     "Ты — автор канала «Скептик с EBITDA».\n"
                     "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
                     "НЕ выводи <think>, рассуждения — только пост.\n"
-                    "Пост должен быть коротким: 3 абзаца, примерно 300–350 символов. Без лишних деталей.\n"
+                    "Пост должен быть содержательным, 4–5 абзацев, примерно 600–800 символов.\n"
                     "Используй эмодзи в начале абзацев, НЕ используй HTML.\n"
                     "В конце — Action Item с ✅.\n"
                     "Указывай период и источник (например, Q3 2023).\n"
@@ -263,7 +264,7 @@ def generate_post():
             }
         ],
         "temperature": 0.85,
-        "max_tokens": 150
+        "max_tokens": 250
     }
 
     for attempt in range(3):
@@ -359,7 +360,7 @@ def send_for_approval_no_image(post_text):
     except Exception as e:
         print(f"[ERROR] Ошибка: {e}")
 
-# ======================== ПУБЛИКАЦИЯ С КАРТИНКОЙ (в канале) =========================
+# ======================== ПУБЛИКАЦИЯ В КАНАЛ С РАЗБИВКОЙ =========================
 def publish_to_telegram(text, image_path):
     try:
         if not os.path.exists(image_path):
@@ -402,11 +403,11 @@ def publish_to_telegram(text, image_path):
         traceback.print_exc()
         return False
 
-# ======================== МОДЕРАЦИЯ (фото + отдельный полный текст) =========================
+# ======================== ОТПРАВКА НА МОДЕРАЦИЮ С ПОЛНОЙ РАЗБИВКОЙ =========================
 def send_for_approval(post_text, image_path, image_prompt, session_id):
     save_post(session_id, post_text, image_path, image_prompt)
 
-    # Фото с кратким началом (до 1000 символов)
+    # Отправляем фото с кратким началом
     first_part = split_text(post_text, max_len=1000)[0]
     caption = f"📝 Новый пост на проверку (начало):\n\n{first_part}..."
     try:
@@ -432,7 +433,7 @@ def send_for_approval(post_text, image_path, image_prompt, session_id):
                 print(f"[ERROR] Ошибка отправки фото: {resp.text}")
                 return False
 
-        # Полный текст разбиваем на части по 3900 символов
+        # Разбиваем полный текст на части по 3900 символов и отправляем все
         full_parts = split_text(post_text, max_len=3900)
         for i, part in enumerate(full_parts, 1):
             text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -727,9 +728,9 @@ threading.Thread(target=keep_alive, daemon=True).start()
 threading.Thread(target=poll_updates, daemon=True).start()
 
 # ======================== РАСПИСАНИЕ =========================
-schedule.every().day.at("06:55").do(lambda: job(auto_publish=False))  # 9:55 МСК – модерация
-schedule.every().day.at("07:00").do(publish_scheduled_posts)  # 10:00 МСК – публикация одобренных
-schedule.every().sunday.at("17:00").do(weekly_report)  # 20:00 МСК – отчёт
+schedule.every().day.at("06:55").do(lambda: job(auto_publish=False))
+schedule.every().day.at("07:00").do(publish_scheduled_posts)
+schedule.every().sunday.at("17:00").do(weekly_report)
 
 print("Бот запущен. Ожидание расписания...")
 print(f"Провайдер: {API_PROVIDER}, Модель: {MODEL_NAME}")
