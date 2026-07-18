@@ -223,7 +223,6 @@ def split_text(text, max_len=1000):
     parts = []
     while len(text) > max_len:
         chunk = text[:max_len]
-        # Ищем последнюю точку, восклицание или вопрос в пределах max_len
         last_punct = max(chunk.rfind('.'), chunk.rfind('!'), chunk.rfind('?'))
         if last_punct > 0:
             split_pos = last_punct + 1
@@ -264,7 +263,7 @@ def generate_post():
             }
         ],
         "temperature": 0.85,
-        "max_tokens": 280  # достаточно для длинного поста
+        "max_tokens": 250
     }
 
     for attempt in range(3):
@@ -321,10 +320,9 @@ def generate_image(prompt):
         print(f"[ERROR] Pollinations error: {e}")
         return None
 
-# ======================== ПУБЛИКАЦИЯ БЕЗ КАРТИНКИ (текст только) =========================
+# ======================== ПУБЛИКАЦИЯ БЕЗ КАРТИНКИ =========================
 def publish_text_only(text):
     try:
-        # Просто отправляем весь текст как одно сообщение
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
         resp = requests.post(url, json=data, timeout=30)
@@ -407,15 +405,12 @@ def publish_to_telegram(text, image_path):
         traceback.print_exc()
         return False
 
-# ======================== ОТПРАВКА НА МОДЕРАЦИЮ (разделение на две части) =========================
+# ======================== МОДЕРАЦИЯ (фото + полный текст отдельно) =========================
 def send_for_approval(post_text, image_path, image_prompt, session_id):
     save_post(session_id, post_text, image_path, image_prompt)
-    parts = split_text(post_text, max_len=1000)
-    first_part = parts[0] if parts else ""
-    second_part = parts[1] if len(parts) > 1 else ""
-
-    # Отправляем фото с первой частью
-    caption = f"📝 Новый пост на проверку (часть 1):\n\n{first_part}"
+    # Первая часть для подписи к фото (до 1000 символов)
+    first_part = split_text(post_text, max_len=1000)[0]
+    caption = f"📝 Новый пост на проверку (начало):\n\n{first_part}..."
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         with open(image_path, "rb") as photo:
@@ -436,18 +431,16 @@ def send_for_approval(post_text, image_path, image_prompt, session_id):
             }
             resp = requests.post(url, files=files, data=data, timeout=30)
             if resp.status_code != 200:
-                print(f"[ERROR] Ошибка модерации (часть 1): {resp.text}")
+                print(f"[ERROR] Ошибка отправки фото: {resp.text}")
                 return False
 
-        # Если есть вторая часть – отправляем текстовым сообщением
-        if second_part:
-            text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-            text_caption = f"📝 Новый пост на проверку (часть 2):\n\n{second_part}"
-            text_data = {"chat_id": ADMIN_CHAT_ID, "text": text_caption}
-            text_resp = requests.post(text_url, json=text_data, timeout=30)
-            if text_resp.status_code != 200:
-                print(f"[ERROR] Ошибка модерации (часть 2): {text_resp.text}")
-                return False
+        # Отправляем полный текст отдельным сообщением
+        text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        text_data = {"chat_id": ADMIN_CHAT_ID, "text": f"📄 Полный текст поста:\n\n{post_text}"}
+        text_resp = requests.post(text_url, json=text_data, timeout=30)
+        if text_resp.status_code != 200:
+            print(f"[ERROR] Ошибка отправки полного текста: {text_resp.text}")
+            return False
 
         return True
     except Exception as e:
@@ -599,12 +592,10 @@ def publish_scheduled_posts():
     print(f"[{datetime.now()}] Проверка запланированных постов...")
     posts = get_approved_posts_to_publish()
     for p in posts:
-        # Пробуем опубликовать с картинкой (разбивка уже внутри)
         if publish_to_telegram(p["text"], p["image_path"]):
             update_post_status(p["session_id"], 'published')
             print(f"[{datetime.now()}] ✅ Опубликован {p['session_id']}")
         else:
-            # Если не удалось с картинкой – публикуем только текст
             if publish_text_only(p["text"]):
                 update_post_status(p["session_id"], 'published')
                 print(f"[{datetime.now()}] ✅ Опубликован текст {p['session_id']}")
@@ -620,40 +611,74 @@ def weekly_report():
         msg = "📊 Недостаточно данных."
     send_message(ADMIN_CHAT_ID, msg)
 
-# ======================== ОСНОВНАЯ ЗАДАЧА (9:55 МСК) =========================
-def job():
+# ======================== ОСНОВНАЯ ЗАДАЧА (с параметром auto_publish) =========================
+def job(auto_publish=False):
     print(f"[{datetime.now()}] Генерация поста...")
     try:
         post_text, image_prompt = generate_post()
         image_path = generate_image(image_prompt)
         if not image_path:
             print("[WARN] Картинка не сгенерирована, публикую только текст")
-            send_for_approval_no_image(post_text)
+            if auto_publish:
+                publish_text_only(post_text)
+                print(f"[{datetime.now()}] ✅ Пост без картинки опубликован (авто)")
+            else:
+                send_for_approval_no_image(post_text)
             return
 
-        session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
-        ok = send_for_approval(post_text, image_path, image_prompt, session_id)
-        if ok:
-            print(f"[{datetime.now()}] ✅ Пост отправлен на модерацию")
+        if auto_publish:
+            if publish_to_telegram(post_text, image_path):
+                print(f"[{datetime.now()}] ✅ Пост опубликован (авто)")
+                send_message(ADMIN_CHAT_ID, f"✅ Авто-пост опубликован в {datetime.now().strftime('%H:%M')}")
+            else:
+                print(f"[{datetime.now()}] ❌ Ошибка авто-публикации")
         else:
-            print(f"[{datetime.now()}] ❌ Ошибка модерации")
+            session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
+            ok = send_for_approval(post_text, image_path, image_prompt, session_id)
+            if ok:
+                print(f"[{datetime.now()}] ✅ Пост отправлен на модерацию")
+            else:
+                print(f"[{datetime.now()}] ❌ Ошибка модерации")
     except Exception as e:
         print(f"[ERROR] job: {e}")
         traceback.print_exc()
 
-# ======================== ВЕБ-СЕРВЕР =========================
+# ======================== ВЕБ-СЕРВЕР (два эндпоинта: /test и /test_publish) =========================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/test':
             old_stdout = sys.stdout
             sys.stdout = io.StringIO()
             try:
-                job()
+                job(auto_publish=False)
                 output = sys.stdout.getvalue()
                 self.send_response(200)
                 self.end_headers()
                 try:
-                    self.wfile.write(f"✅ Успешно!\n\n{output}".encode())
+                    self.wfile.write(f"✅ Успешно (модерация)!\n\n{output}".encode())
+                except BrokenPipeError:
+                    pass
+            except Exception as e:
+                output = sys.stdout.getvalue()
+                error_text = traceback.format_exc()
+                self.send_response(500)
+                self.end_headers()
+                try:
+                    self.wfile.write(f"❌ ОШИБКА: {str(e)}\n\n{output}\n\nСТЕК:\n{error_text}".encode())
+                except BrokenPipeError:
+                    pass
+            finally:
+                sys.stdout = old_stdout
+        elif self.path == '/test_publish':
+            old_stdout = sys.stdout
+            sys.stdout = io.StringIO()
+            try:
+                job(auto_publish=True)
+                output = sys.stdout.getvalue()
+                self.send_response(200)
+                self.end_headers()
+                try:
+                    self.wfile.write(f"✅ Успешно (авто-публикация)!\n\n{output}".encode())
                 except BrokenPipeError:
                     pass
             except Exception as e:
