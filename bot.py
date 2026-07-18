@@ -20,15 +20,13 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
-DATABASE_URL = os.getenv("DATABASE_URL")  # для PostgreSQL, опционально
+DATABASE_URL = os.getenv("DATABASE_URL")  # опционально
 
 API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
 MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
 
-# Московское время для расписаний
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
-# Тематика по дням недели (0-Пн, 1-Вт, ...)
 DAY_TOPICS = {
     0: "логистические провалы Ozon: затраты, сроки доставки, убытки",
     1: "штрафы и возвраты Wildberries: как компания зарабатывает на продавцах",
@@ -36,17 +34,14 @@ DAY_TOPICS = {
     3: "маркетинговые расходы Ozon: сколько тратят на привлечение клиентов и окупается ли это",
     4: "технологические проблемы Wildberries: баги, сбои, инвестиции в IT",
     5: "стратегия экспансии Магнита: открытие и закрытие магазинов, эффективность",
-    6: "сравнительный анализ трёх ритейлеров: кто хуже?"   # воскресенье
+    6: "сравнительный анализ трёх ритейлеров: кто хуже?"
 }
 
 PROVIDER_CONFIG = {
     "openai": {
         "url": "https://api.chatanywhere.tech/v1/chat/completions",
         "default_model": "deepseek-v3",
-        "headers": lambda key: {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}"
-        }
+        "headers": lambda key: {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
     },
     "openrouter": {
         "url": "https://openrouter.ai/api/v1/chat/completions",
@@ -126,7 +121,6 @@ def init_db():
             conn.execute('CREATE INDEX IF NOT EXISTS idx_status ON posts(status)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_scheduled_publish ON posts(scheduled_publish_time)')
             conn.commit()
-
 init_db()
 
 def execute_query(query, params=None, fetch=False, fetchone=False):
@@ -164,16 +158,13 @@ def save_post(session_id, text, image_path, image_prompt):
         'INSERT OR REPLACE INTO posts (session_id, text, image_path, image_prompt, status, created_at) VALUES (?, ?, ?, ?, ?, ?)',
         (session_id, text, image_path, image_prompt, 'pending', datetime.now().isoformat())
     )
-    print(f"[DEBUG] Пост сохранён в БД: session_id={session_id}")
+    print(f"[DEBUG] Пост сохранён: {session_id}")
 
 def get_post(session_id):
     row = execute_query('SELECT text, image_path, image_prompt, status, scheduled_publish_time, edit_pending FROM posts WHERE session_id = ?', (session_id,), fetchone=True)
     if row:
-        print(f"[DEBUG] Найден пост: session_id={session_id}, status={row['status']}")
         return row
-    else:
-        print(f"[DEBUG] Пост не найден: session_id={session_id}")
-        return None
+    return None
 
 def update_post_text(session_id, new_text):
     execute_query('UPDATE posts SET text = ? WHERE session_id = ?', (new_text, session_id))
@@ -187,7 +178,7 @@ def update_post_status(session_id, status, scheduled_time=None):
 
 def delete_post(session_id):
     execute_query('DELETE FROM posts WHERE session_id = ?', (session_id,))
-    print(f"[DEBUG] Пост удалён: session_id={session_id}")
+    print(f"[DEBUG] Пост удалён: {session_id}")
 
 def get_approved_posts_to_publish():
     now = datetime.now().isoformat()
@@ -205,7 +196,7 @@ def get_weekly_stats():
     )
     return rows
 
-# ======================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =========================
+# ======================== ВСПОМОГАТЕЛЬНЫЕ =========================
 def clean_text(text):
     text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
     text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
@@ -213,13 +204,23 @@ def clean_text(text):
     return text.strip()
 
 def get_topic_by_day():
-    weekday = datetime.now().weekday()
-    return DAY_TOPICS.get(weekday, DAY_TOPICS[0])
+    return DAY_TOPICS.get(datetime.now().weekday(), DAY_TOPICS[0])
+
+def smart_truncate(text, max_len=950):
+    if len(text) <= max_len:
+        return text
+    # Обрезаем до max_len, ищем последний пробел
+    truncated = text[:max_len]
+    last_space = truncated.rfind(' ')
+    if last_space > 0:
+        return truncated[:last_space] + "... (продолжение в канале)"
+    else:
+        return truncated + "... (продолжение в канале)"
 
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
-    topic = get_topic_by_day()  # теперь по дням недели
-    print(f"[DEBUG] Выбрана тема (день недели): {topic}")
+    topic = get_topic_by_day()
+    print(f"[DEBUG] Тема дня: {topic}")
 
     headers = API_HEADERS_FUNC(DEEPSEEK_API_KEY)
     payload = {
@@ -229,23 +230,22 @@ def generate_post():
                 "role": "system",
                 "content": (
                     "Ты — автор канала «Скептик с EBITDA».\n"
-                    "Стиль: дерзкий, саркастичный, с конкретными цифрами.\n"
-                    "НЕ выводи <think>, рассуждения — только готовый пост.\n"
-                    "Пост должен быть строго до 350 символов (3–4 коротких абзаца).\n"
-                    "Используй эмодзи в начале абзацев (например, 📦, 💰, 📊, ⚠️, 🔥, 📉).\n"
-                    "НЕ используй HTML-теги (<b>, <i> и т.д.).\n"
-                    "В конце — Action Item с ✅ (одно предложение).\n"
-                    "Указывай конкретный период (например, Q1 2024) и источник (например, 'по данным отчёта по МСФО').\n"
+                    "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
+                    "НЕ выводи <think>, рассуждения — только пост.\n"
+                    "Пост должен быть не более 700 символов (4–5 коротких абзацев).\n"
+                    "Используй эмодзи в начале абзацев, НЕ используй HTML.\n"
+                    "В конце — Action Item с ✅.\n"
+                    "Указывай период и источник (например, Q1 2024, по отчёту МСФО).\n"
                     "После текста === и описание картинки (англ., 3–4 слова)."
                 )
             },
             {
                 "role": "user",
-                "content": f"Напиши пост на тему: {topic}. Используй реальные цифры из последних отчётов."
+                "content": f"Напиши пост на тему: {topic}. Используй свежие цифры из отчётов."
             }
         ],
         "temperature": 0.85,
-        "max_tokens": 180
+        "max_tokens": 140  # уменьшено для гарантии
     }
 
     for attempt in range(3):
@@ -254,8 +254,8 @@ def generate_post():
             if response.status_code != 200:
                 raise Exception(f"API вернул {response.status_code}: {response.text}")
             data = response.json()
-            if "choices" not in data or not data["choices"]:
-                raise Exception("Ответ не содержит choices")
+            if "choices" not in data:
+                raise Exception("Нет choices")
             full_text = data["choices"][0]["message"]["content"]
             if not full_text:
                 raise Exception("Пустой ответ")
@@ -271,32 +271,32 @@ def generate_post():
                 image_prompt = "business finance sarcastic illustration"
             return post_text, image_prompt
         except requests.exceptions.Timeout:
-            print(f"[WARN] Попытка {attempt+1} таймаут, повтор...")
+            print(f"[WARN] Попытка {attempt+1} таймаут")
             time.sleep(5)
         except Exception as e:
             print(f"[ERROR] Попытка {attempt+1}: {e}")
             if attempt == 2:
                 raise
             time.sleep(3)
-    raise Exception("Не удалось получить ответ от API")
+    raise Exception("Не удалось получить ответ")
 
 # ======================== ГЕНЕРАЦИЯ КАРТИНКИ =========================
 def generate_image(prompt):
     try:
-        unique_suffix = f" {random.randint(1, 100000)}"
-        full_prompt = prompt + unique_suffix
-        encoded = urllib.parse.quote(full_prompt)
-        seed = random.randint(1, 999999)
-        timestamp = int(time.time())
-        url = f"https://image.pollinations.ai/prompt/{encoded}?width=1200&height=800&seed={seed}&t={timestamp}"
+        unique = f" {random.randint(1,100000)}"
+        full = prompt + unique
+        encoded = urllib.parse.quote(full)
+        seed = random.randint(1,999999)
+        ts = int(time.time())
+        url = f"https://image.pollinations.ai/prompt/{encoded}?width=1200&height=800&seed={seed}&t={ts}"
         print(f"[DEBUG] Pollinations URL: {url}")
-        response = requests.get(url, timeout=30)
-        if response.status_code == 200:
+        resp = requests.get(url, timeout=30)
+        if resp.status_code == 200:
             with open("temp_image.jpg", "wb") as f:
-                f.write(response.content)
+                f.write(resp.content)
             return "temp_image.jpg"
         else:
-            print(f"[ERROR] Pollinations status {response.status_code}")
+            print(f"[ERROR] Pollinations status {resp.status_code}")
             return None
     except Exception as e:
         print(f"[ERROR] Pollinations error: {e}")
@@ -306,48 +306,43 @@ def generate_image(prompt):
 def publish_to_telegram(text, image_path):
     try:
         if not os.path.exists(image_path):
-            print(f"[ERROR] Файл {image_path} не найден")
+            print("[ERROR] Файл картинки не найден")
             return False
+        # Принудительная обрезка для безопасности
+        text = smart_truncate(text, 950)
+        print(f"[DEBUG] Длина текста после обрезки: {len(text)}")
 
-        print(f"[DEBUG] Длина текста перед публикацией: {len(text)} символов")
-        if len(text) > 1024:
-            print(f"[WARN] Текст длиннее 1024 символов ({len(text)}), Telegram может обрезать.")
-
-        # Проверяем права бота
+        # Проверка прав
         check_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getChatMember"
         check_params = {"chat_id": TELEGRAM_CHAT_ID, "user_id": "me"}
-        check_response = requests.get(check_url, params=check_params, timeout=10)
-        if check_response.status_code == 200:
-            check_data = check_response.json()
-            if check_data.get("ok") and check_data.get("result", {}).get("status") not in ["administrator", "creator"]:
-                print("[ERROR] Бот не администратор канала!")
+        check_resp = requests.get(check_url, params=check_params, timeout=10)
+        if check_resp.status_code == 200:
+            if check_resp.json().get("result", {}).get("status") not in ["administrator", "creator"]:
+                print("[ERROR] Бот не администратор")
                 return False
-        else:
-            print(f"[ERROR] Не удалось проверить права: {check_response.text}")
 
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         with open(image_path, "rb") as photo:
             files = {"photo": photo}
-            data = {
-                "chat_id": TELEGRAM_CHAT_ID,
-                "caption": text
-            }
-            response = requests.post(url, files=files, data=data, timeout=30)
-        if response.status_code == 200:
+            data = {"chat_id": TELEGRAM_CHAT_ID, "caption": text}
+            resp = requests.post(url, files=files, data=data, timeout=30)
+        if resp.status_code == 200:
             print("[DEBUG] Публикация успешна")
             return True
         else:
-            print(f"[ERROR] Telegram ответ: {response.text}")
+            print(f"[ERROR] Telegram ответ: {resp.text}")
             return False
     except Exception as e:
         print(f"[ERROR] Ошибка публикации: {e}")
         traceback.print_exc()
         return False
 
-# ======================== ОТПРАВКА НА ПРОВЕРКУ =========================
+# ======================== ОТПРАВКА НА ПРОВЕРКУ С КНОПКОЙ РЕДАКТИРОВАНИЯ =========================
 def send_for_approval(post_text, image_path, image_prompt, session_id):
     save_post(session_id, post_text, image_path, image_prompt)
-    caption = f"📝 Новый пост на проверку:\n\n{post_text}"
+    # Для красоты в сообщении тоже обрезаем
+    display_text = smart_truncate(post_text, 900)
+    caption = f"📝 Новый пост на проверку:\n\n{display_text}"
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         with open(image_path, "rb") as photo:
@@ -366,24 +361,22 @@ def send_for_approval(post_text, image_path, image_prompt, session_id):
                     ]
                 })
             }
-            response = requests.post(url, files=files, data=data, timeout=30)
-            if response.status_code != 200:
-                print(f"[ERROR] Не удалось отправить на модерацию: {response.text}")
+            resp = requests.post(url, files=files, data=data, timeout=30)
+            if resp.status_code != 200:
+                print(f"[ERROR] Ошибка отправки на модерацию: {resp.text}")
                 return False
             return True
     except Exception as e:
-        print(f"[ERROR] Ошибка отправки на модерацию: {e}")
+        print(f"[ERROR] Ошибка модерации: {e}")
         return False
 
 def schedule_publish(session_id):
-    # Вычисляем время публикации: 10:00 сегодня, если сейчас < 10:00, иначе 10:00 завтра
     now = datetime.now(MOSCOW_TZ)
     publish_time = now.replace(hour=10, minute=0, second=0, microsecond=0)
     if now >= publish_time:
         publish_time += timedelta(days=1)
     update_post_status(session_id, 'approved', scheduled_time=publish_time)
-    # Уведомляем админа
-    msg = f"✅ Пост одобрен и запланирован к публикации в {publish_time.strftime('%d.%m.%Y %H:%M')} МСК."
+    msg = f"✅ Пост одобрен и запланирован на {publish_time.strftime('%d.%m.%Y %H:%M')} МСК."
     send_message(ADMIN_CHAT_ID, msg)
 
 def send_message(chat_id, text):
@@ -394,60 +387,54 @@ def send_message(chat_id, text):
     except Exception as e:
         print(f"[ERROR] Ошибка отправки сообщения: {e}")
 
-# ======================== ОБРАБОТЧИК КНОПОК =========================
-edit_mode = {}  # chat_id -> session_id (ожидание текста редактирования)
+# ======================== ОБРАБОТЧИК КНОПОК И РЕДАКТИРОВАНИЯ =========================
+edit_mode = {}  # chat_id -> session_id
 
 def process_callback(callback_data, chat_id, message_id):
     parts = callback_data.split('_', 1)
     if len(parts) != 2:
         return
     action, session_id = parts
-    print(f"[DEBUG] Callback: action={action}, session_id={session_id}")
+    print(f"[DEBUG] Callback: {action}, {session_id}")
     post_data = get_post(session_id)
     if not post_data:
         answer_callback(chat_id, message_id, "🔄 Черновик устарел, генерирую новый...")
         try:
             new_text, new_prompt = generate_post()
-            new_image_path = generate_image(new_prompt)
-            if not new_image_path:
+            new_img = generate_image(new_prompt)
+            if not new_img:
                 answer_callback(chat_id, message_id, "❌ Ошибка генерации картинки")
                 return
-            new_session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
-            send_for_approval(new_text, new_image_path, new_prompt, new_session_id)
+            new_sid = f"{int(time.time())}_{random.randint(1000,9999)}"
+            send_for_approval(new_text, new_img, new_prompt, new_sid)
             answer_callback(chat_id, message_id, "✅ Новый пост отправлен на проверку.")
         except Exception as e:
             answer_callback(chat_id, message_id, f"❌ Ошибка: {str(e)[:100]}")
         return
 
-    if post_data["status"] == "published":
-        answer_callback(chat_id, message_id, "ℹ️ Этот пост уже был опубликован.")
-        return
-    if post_data["status"] == "rejected":
-        answer_callback(chat_id, message_id, "ℹ️ Этот пост был отклонён.")
-        return
-    if post_data["status"] == "approved":
-        answer_callback(chat_id, message_id, "ℹ️ Этот пост уже одобрен и ожидает публикации.")
+    if post_data["status"] in ("published", "rejected", "approved"):
+        answer_callback(chat_id, message_id, f"ℹ️ Пост уже {post_data['status']}.")
         return
 
     if action == "approve":
         schedule_publish(session_id)
-        answer_callback(chat_id, message_id, f"✅ Пост одобрен, будет опубликован в 10:00 МСК.")
+        answer_callback(chat_id, message_id, "✅ Пост одобрен, будет опубликован в 10:00 МСК.")
     elif action == "regenerate":
         answer_callback(chat_id, message_id, "🔄 Генерирую новый...")
         try:
             new_text, new_prompt = generate_post()
-            new_image_path = generate_image(new_prompt)
-            if not new_image_path:
+            new_img = generate_image(new_prompt)
+            if not new_img:
                 answer_callback(chat_id, message_id, "❌ Ошибка генерации картинки")
                 return
-            new_session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
+            new_sid = f"{int(time.time())}_{random.randint(1000,9999)}"
             delete_post(session_id)
-            send_for_approval(new_text, new_image_path, new_prompt, new_session_id)
-            answer_callback(chat_id, message_id, "🔄 Новый пост отправлен на проверку.")
+            send_for_approval(new_text, new_img, new_prompt, new_sid)
+            answer_callback(chat_id, message_id, "🔄 Новый пост отправлен.")
         except Exception as e:
-            answer_callback(chat_id, message_id, f"❌ Ошибка перегенерации: {str(e)[:100]}")
+            answer_callback(chat_id, message_id, f"❌ Ошибка: {str(e)[:100]}")
     elif action == "edit":
-        answer_callback(chat_id, message_id, "✏️ Пришли новый текст поста (только текст, без картинки и без кнопок).")
+        answer_callback(chat_id, message_id, "✏️ Пришли новый текст поста (без картинки).")
         edit_mode[chat_id] = session_id
     elif action == "reject":
         update_post_status(session_id, 'rejected')
@@ -455,25 +442,25 @@ def process_callback(callback_data, chat_id, message_id):
 
 def answer_callback(chat_id, message_id, text):
     try:
-        send_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        send_data = {"chat_id": chat_id, "text": text}
-        requests.post(send_url, json=send_data, timeout=10)
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        data = {"chat_id": chat_id, "text": text}
+        requests.post(url, json=data, timeout=10)
     except Exception as e:
-        print(f"[ERROR] Ошибка ответа на callback: {e}")
+        print(f"[ERROR] Ошибка callback: {e}")
 
-# ======================== ПОЛЛИНГ ОБНОВЛЕНИЙ (включая текстовые для редактирования) =========================
+# ======================== ПОЛЛИНГ (включая текстовые сообщения для редактирования) =========================
 def poll_updates():
     offset = 0
     while True:
         try:
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
             params = {"offset": offset, "timeout": 30, "allowed_updates": ["callback_query", "message"]}
-            response = requests.get(url, params=params, timeout=35)
-            if response.status_code != 200:
-                print(f"[ERROR] getUpdates ошибка {response.status_code}")
+            resp = requests.get(url, params=params, timeout=35)
+            if resp.status_code != 200:
+                print(f"[ERROR] getUpdates ошибка {resp.status_code}")
                 time.sleep(5)
                 continue
-            data = response.json()
+            data = resp.json()
             if not data.get("ok"):
                 print(f"[ERROR] getUpdates: {data}")
                 time.sleep(5)
@@ -488,66 +475,59 @@ def poll_updates():
                         message_id = cb["id"]
                         process_callback(cb_data, chat_id, message_id)
                         try:
-                            answer_callback_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery"
-                            answer_data = {"callback_query_id": cb["id"], "text": "Обрабатываю..."}
-                            requests.post(answer_callback_url, json=answer_data, timeout=10)
+                            ans_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery"
+                            ans_data = {"callback_query_id": cb["id"], "text": "Обрабатываю..."}
+                            requests.post(ans_url, json=ans_data, timeout=10)
                         except:
                             pass
                 elif "message" in update and update["message"].get("chat", {}).get("id") == int(ADMIN_CHAT_ID):
-                    # Проверяем, находится ли админ в режиме редактирования
                     chat_id = update["message"]["chat"]["id"]
                     if chat_id in edit_mode:
                         session_id = edit_mode.pop(chat_id)
                         new_text = update["message"].get("text")
                         if new_text:
-                            # Обновляем текст поста
+                            # Обновляем текст в БД
                             update_post_text(session_id, new_text)
-                            # Отправляем обновлённый пост на проверку (с новым session_id, чтобы не конфликтовать)
+                            # Получаем обновлённый пост
                             post_data = get_post(session_id)
                             if post_data:
-                                # Создаём новый session_id для обновлённого поста
-                                new_session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
-                                # Копируем данные с новым id
-                                save_post(new_session_id, new_text, post_data["image_path"], post_data["image_prompt"])
-                                # Удаляем старый
+                                # Отправляем обновлённый пост на проверку (новый session_id)
+                                new_sid = f"{int(time.time())}_{random.randint(1000,9999)}"
+                                save_post(new_sid, new_text, post_data["image_path"], post_data["image_prompt"])
                                 delete_post(session_id)
-                                # Отправляем на проверку
-                                send_for_approval(new_text, post_data["image_path"], post_data["image_prompt"], new_session_id)
+                                send_for_approval(new_text, post_data["image_path"], post_data["image_prompt"], new_sid)
                                 send_message(chat_id, "✅ Пост обновлён и отправлен на повторную проверку.")
                             else:
-                                send_message(chat_id, "❌ Не удалось найти пост для обновления.")
+                                send_message(chat_id, "❌ Не удалось найти пост.")
                         else:
-                            send_message(chat_id, "❌ Текст не может быть пустым. Попробуй ещё раз или отклони пост.")
+                            send_message(chat_id, "❌ Текст не может быть пустым.")
         except Exception as e:
             print(f"[ERROR] poll_updates: {e}")
             time.sleep(5)
 
-# ======================== ПУБЛИКАЦИЯ ЗАПЛАНИРОВАННЫХ ПОСТОВ =========================
+# ======================== ПУБЛИКАЦИЯ ЗАПЛАНИРОВАННЫХ =========================
 def publish_scheduled_posts():
     print(f"[{datetime.now()}] Проверка запланированных постов...")
     posts = get_approved_posts_to_publish()
-    for post in posts:
-        session_id = post['session_id']
-        text = post['text']
-        image_path = post['image_path']
-        if publish_to_telegram(text, image_path):
-            update_post_status(session_id, 'published')
-            print(f"[{datetime.now()}] ✅ Опубликован пост {session_id}")
+    for p in posts:
+        if publish_to_telegram(p["text"], p["image_path"]):
+            update_post_status(p["session_id"], 'published')
+            print(f"[{datetime.now()}] ✅ Опубликован {p['session_id']}")
         else:
-            print(f"[{datetime.now()}] ❌ Ошибка публикации поста {session_id}")
+            print(f"[{datetime.now()}] ❌ Ошибка публикации {p['session_id']}")
 
 # ======================== ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ =========================
 def weekly_report():
     stats = get_weekly_stats()
     if stats:
-        msg = f"📊 Еженедельный отчёт:\nОдобрено постов: {stats['published']}\nОтклонено: {stats['rejected']}\nВсего создано: {stats['total']}"
+        msg = f"📊 Еженедельный отчёт:\nОдобрено: {stats['published']}\nОтклонено: {stats['rejected']}\nВсего создано: {stats['total']}"
     else:
-        msg = "📊 Недостаточно данных для отчёта."
+        msg = "📊 Недостаточно данных."
     send_message(ADMIN_CHAT_ID, msg)
 
 # ======================== ОСНОВНАЯ ЗАДАЧА (9:55 МСК) =========================
 def job():
-    print(f"[{datetime.now()}] Генерация поста для проверки...")
+    print(f"[{datetime.now()}] Генерация поста...")
     try:
         post_text, image_prompt = generate_post()
         image_path = generate_image(image_prompt)
@@ -557,9 +537,9 @@ def job():
         session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
         ok = send_for_approval(post_text, image_path, image_prompt, session_id)
         if ok:
-            print(f"[{datetime.now()}] ✅ Пост отправлен на модерацию (ID: {session_id})")
+            print(f"[{datetime.now()}] ✅ Пост отправлен на модерацию")
         else:
-            print(f"[{datetime.now()}] ❌ Ошибка отправки на модерацию")
+            print(f"[{datetime.now()}] ❌ Ошибка модерации")
     except Exception as e:
         print(f"[ERROR] job: {e}")
         traceback.print_exc()
@@ -622,16 +602,12 @@ threading.Thread(target=keep_alive, daemon=True).start()
 threading.Thread(target=poll_updates, daemon=True).start()
 
 # ======================== РАСПИСАНИЕ =========================
-# 6:55 UTC = 9:55 МСК
-schedule.every().day.at("06:55").do(job)
-# Публикация запланированных постов в 10:00 МСК (7:00 UTC)
-schedule.every().day.at("07:00").do(publish_scheduled_posts)
-# Еженедельный отчёт по воскресеньям в 20:00 МСК (17:00 UTC)
-schedule.every().sunday.at("17:00").do(weekly_report)
+schedule.every().day.at("06:55").do(job)            # 9:55 МСК
+schedule.every().day.at("07:00").do(publish_scheduled_posts)  # 10:00 МСК
+schedule.every().sunday.at("17:00").do(weekly_report)  # 20:00 МСК
 
 print("Бот запущен. Ожидание расписания...")
 print(f"Провайдер: {API_PROVIDER}, Модель: {MODEL_NAME}")
-print(f"URL: {API_URL}")
 
 while True:
     schedule.run_pending()
