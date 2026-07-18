@@ -123,8 +123,11 @@ def init_db():
             conn.commit()
 init_db()
 
+# ======================== ИСПРАВЛЕННЫЕ ФУНКЦИИ =========================
 def execute_query(query, params=None, fetch=False, fetchone=False):
     if db_type == 'postgres':
+        # Заменяем ? на %s для PostgreSQL
+        query = query.replace('?', '%s')
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=RealDictCursor if fetch or fetchone else None)
         cur.execute(query, params)
@@ -154,17 +157,27 @@ def execute_query(query, params=None, fetch=False, fetchone=False):
             return result
 
 def save_post(session_id, text, image_path, image_prompt):
-    execute_query(
-        'INSERT OR REPLACE INTO posts (session_id, text, image_path, image_prompt, status, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-        (session_id, text, image_path, image_prompt, 'pending', datetime.now().isoformat())
-    )
-    print(f"[DEBUG] Пост сохранён: {session_id}")
+    if db_type == 'postgres':
+        query = '''
+            INSERT INTO posts (session_id, text, image_path, image_prompt, status, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (session_id) DO UPDATE SET
+                text = EXCLUDED.text,
+                image_path = EXCLUDED.image_path,
+                image_prompt = EXCLUDED.image_prompt,
+                status = EXCLUDED.status,
+                created_at = EXCLUDED.created_at
+        '''
+        params = (session_id, text, image_path, image_prompt, 'pending', datetime.now().isoformat())
+    else:
+        query = 'INSERT OR REPLACE INTO posts (session_id, text, image_path, image_prompt, status, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+        params = (session_id, text, image_path, image_prompt, 'pending', datetime.now().isoformat())
+    execute_query(query, params)
+    print(f"[DEBUG] Пост сохранён в БД: session_id={session_id}")
 
 def get_post(session_id):
     row = execute_query('SELECT text, image_path, image_prompt, status, scheduled_publish_time, edit_pending FROM posts WHERE session_id = ?', (session_id,), fetchone=True)
-    if row:
-        return row
-    return None
+    return row
 
 def update_post_text(session_id, new_text):
     execute_query('UPDATE posts SET text = ? WHERE session_id = ?', (new_text, session_id))
@@ -178,7 +191,6 @@ def update_post_status(session_id, status, scheduled_time=None):
 
 def delete_post(session_id):
     execute_query('DELETE FROM posts WHERE session_id = ?', (session_id,))
-    print(f"[DEBUG] Пост удалён: {session_id}")
 
 def get_approved_posts_to_publish():
     now = datetime.now().isoformat()
@@ -209,7 +221,6 @@ def get_topic_by_day():
 def smart_truncate(text, max_len=950):
     if len(text) <= max_len:
         return text
-    # Обрезаем до max_len, ищем последний пробел
     truncated = text[:max_len]
     last_space = truncated.rfind(' ')
     if last_space > 0:
@@ -245,7 +256,7 @@ def generate_post():
             }
         ],
         "temperature": 0.85,
-        "max_tokens": 140  # уменьшено для гарантии
+        "max_tokens": 140
     }
 
     for attempt in range(3):
@@ -308,11 +319,9 @@ def publish_to_telegram(text, image_path):
         if not os.path.exists(image_path):
             print("[ERROR] Файл картинки не найден")
             return False
-        # Принудительная обрезка для безопасности
         text = smart_truncate(text, 950)
         print(f"[DEBUG] Длина текста после обрезки: {len(text)}")
 
-        # Проверка прав
         check_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getChatMember"
         check_params = {"chat_id": TELEGRAM_CHAT_ID, "user_id": "me"}
         check_resp = requests.get(check_url, params=check_params, timeout=10)
@@ -337,10 +346,9 @@ def publish_to_telegram(text, image_path):
         traceback.print_exc()
         return False
 
-# ======================== ОТПРАВКА НА ПРОВЕРКУ С КНОПКОЙ РЕДАКТИРОВАНИЯ =========================
+# ======================== ОТПРАВКА НА ПРОВЕРКУ =========================
 def send_for_approval(post_text, image_path, image_prompt, session_id):
     save_post(session_id, post_text, image_path, image_prompt)
-    # Для красоты в сообщении тоже обрезаем
     display_text = smart_truncate(post_text, 900)
     caption = f"📝 Новый пост на проверку:\n\n{display_text}"
     try:
@@ -388,7 +396,7 @@ def send_message(chat_id, text):
         print(f"[ERROR] Ошибка отправки сообщения: {e}")
 
 # ======================== ОБРАБОТЧИК КНОПОК И РЕДАКТИРОВАНИЯ =========================
-edit_mode = {}  # chat_id -> session_id
+edit_mode = {}
 
 def process_callback(callback_data, chat_id, message_id):
     parts = callback_data.split('_', 1)
@@ -448,7 +456,7 @@ def answer_callback(chat_id, message_id, text):
     except Exception as e:
         print(f"[ERROR] Ошибка callback: {e}")
 
-# ======================== ПОЛЛИНГ (включая текстовые сообщения для редактирования) =========================
+# ======================== ПОЛЛИНГ =========================
 def poll_updates():
     offset = 0
     while True:
@@ -486,12 +494,9 @@ def poll_updates():
                         session_id = edit_mode.pop(chat_id)
                         new_text = update["message"].get("text")
                         if new_text:
-                            # Обновляем текст в БД
                             update_post_text(session_id, new_text)
-                            # Получаем обновлённый пост
                             post_data = get_post(session_id)
                             if post_data:
-                                # Отправляем обновлённый пост на проверку (новый session_id)
                                 new_sid = f"{int(time.time())}_{random.randint(1000,9999)}"
                                 save_post(new_sid, new_text, post_data["image_path"], post_data["image_prompt"])
                                 delete_post(session_id)
