@@ -123,10 +123,8 @@ def init_db():
             conn.commit()
 init_db()
 
-# ======================== ИСПРАВЛЕННЫЕ ФУНКЦИИ =========================
 def execute_query(query, params=None, fetch=False, fetchone=False):
     if db_type == 'postgres':
-        # Заменяем ? на %s для PostgreSQL
         query = query.replace('?', '%s')
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=RealDictCursor if fetch or fetchone else None)
@@ -173,7 +171,7 @@ def save_post(session_id, text, image_path, image_prompt):
         query = 'INSERT OR REPLACE INTO posts (session_id, text, image_path, image_prompt, status, created_at) VALUES (?, ?, ?, ?, ?, ?)'
         params = (session_id, text, image_path, image_prompt, 'pending', datetime.now().isoformat())
     execute_query(query, params)
-    print(f"[DEBUG] Пост сохранён в БД: session_id={session_id}")
+    print(f"[DEBUG] Пост сохранён: {session_id}")
 
 def get_post(session_id):
     row = execute_query('SELECT text, image_path, image_prompt, status, scheduled_publish_time, edit_pending FROM posts WHERE session_id = ?', (session_id,), fetchone=True)
@@ -243,10 +241,10 @@ def generate_post():
                     "Ты — автор канала «Скептик с EBITDA».\n"
                     "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
                     "НЕ выводи <think>, рассуждения — только пост.\n"
-                    "Пост должен быть не более 700 символов (4–5 коротких абзацев).\n"
+                    "Пост должен быть не более 700 символов (4–5 абзацев).\n"
                     "Используй эмодзи в начале абзацев, НЕ используй HTML.\n"
                     "В конце — Action Item с ✅.\n"
-                    "Указывай период и источник (например, Q1 2024, по отчёту МСФО).\n"
+                    "Указывай период и источник (например, Q1 2024).\n"
                     "После текста === и описание картинки (англ., 3–4 слова)."
                 )
             },
@@ -291,7 +289,7 @@ def generate_post():
             time.sleep(3)
     raise Exception("Не удалось получить ответ")
 
-# ======================== ГЕНЕРАЦИЯ КАРТИНКИ =========================
+# ======================== ГЕНЕРАЦИЯ КАРТИНКИ (с увеличенным таймаутом) =========================
 def generate_image(prompt):
     try:
         unique = f" {random.randint(1,100000)}"
@@ -301,7 +299,7 @@ def generate_image(prompt):
         ts = int(time.time())
         url = f"https://image.pollinations.ai/prompt/{encoded}?width=1200&height=800&seed={seed}&t={ts}"
         print(f"[DEBUG] Pollinations URL: {url}")
-        resp = requests.get(url, timeout=30)
+        resp = requests.get(url, timeout=60)  # увеличен таймаут
         if resp.status_code == 200:
             with open("temp_image.jpg", "wb") as f:
                 f.write(resp.content)
@@ -313,7 +311,49 @@ def generate_image(prompt):
         print(f"[ERROR] Pollinations error: {e}")
         return None
 
-# ======================== ПУБЛИКАЦИЯ В КАНАЛ =========================
+# ======================== ПУБЛИКАЦИЯ БЕЗ КАРТИНКИ (FALLBACK) =========================
+def publish_text_only(text):
+    try:
+        if len(text) > 950:
+            text = smart_truncate(text, 950)
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
+        resp = requests.post(url, json=data, timeout=30)
+        if resp.status_code == 200:
+            print("[DEBUG] Пост без картинки опубликован")
+            return True
+        else:
+            print(f"[ERROR] Ошибка публикации без картинки: {resp.text}")
+            return False
+    except Exception as e:
+        print(f"[ERROR] Ошибка: {e}")
+        return False
+
+def send_for_approval_no_image(post_text):
+    display_text = smart_truncate(post_text, 900)
+    caption = f"📝 Новый пост на проверку (без картинки):\n\n{display_text}"
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        data = {
+            "chat_id": ADMIN_CHAT_ID,
+            "text": caption,
+            "reply_markup": json.dumps({
+                "inline_keyboard": [
+                    [
+                        {"text": "✅ Одобрить (без фото)", "callback_data": f"approve_noimg_{int(time.time())}"},
+                        {"text": "🔄 Перегенерировать", "callback_data": "regenerate"},
+                        {"text": "❌ Отклонить", "callback_data": "reject"}
+                    ]
+                ]
+            })
+        }
+        resp = requests.post(url, json=data, timeout=30)
+        if resp.status_code != 200:
+            print(f"[ERROR] Ошибка модерации без фото: {resp.text}")
+    except Exception as e:
+        print(f"[ERROR] Ошибка: {e}")
+
+# ======================== ПУБЛИКАЦИЯ В КАНАЛ С КАРТИНКОЙ =========================
 def publish_to_telegram(text, image_path):
     try:
         if not os.path.exists(image_path):
@@ -346,7 +386,7 @@ def publish_to_telegram(text, image_path):
         traceback.print_exc()
         return False
 
-# ======================== ОТПРАВКА НА ПРОВЕРКУ =========================
+# ======================== ОТПРАВКА НА ПРОВЕРКУ (с картинкой) =========================
 def send_for_approval(post_text, image_path, image_prompt, session_id):
     save_post(session_id, post_text, image_path, image_prompt)
     display_text = smart_truncate(post_text, 900)
@@ -395,7 +435,7 @@ def send_message(chat_id, text):
     except Exception as e:
         print(f"[ERROR] Ошибка отправки сообщения: {e}")
 
-# ======================== ОБРАБОТЧИК КНОПОК И РЕДАКТИРОВАНИЯ =========================
+# ======================== ОБРАБОТЧИК КНОПОК =========================
 edit_mode = {}
 
 def process_callback(callback_data, chat_id, message_id):
@@ -404,6 +444,14 @@ def process_callback(callback_data, chat_id, message_id):
         return
     action, session_id = parts
     print(f"[DEBUG] Callback: {action}, {session_id}")
+
+    # Если это одобрение без картинки
+    if action == "approve_noimg":
+        # В этом случае session_id — это просто временная метка, но мы не храним пост в БД
+        # Поэтому проще предложить перегенерировать с картинкой или опубликовать как есть.
+        send_message(chat_id, "ℹ️ Функция одобрения без картинки пока в разработке. Используйте 'Перегенерировать' или 'Отклонить'.")
+        return
+
     post_data = get_post(session_id)
     if not post_data:
         answer_callback(chat_id, message_id, "🔄 Черновик устарел, генерирую новый...")
@@ -411,7 +459,9 @@ def process_callback(callback_data, chat_id, message_id):
             new_text, new_prompt = generate_post()
             new_img = generate_image(new_prompt)
             if not new_img:
-                answer_callback(chat_id, message_id, "❌ Ошибка генерации картинки")
+                # Если картинка не сгенерировалась, отправляем без картинки
+                send_for_approval_no_image(new_text)
+                answer_callback(chat_id, message_id, "✅ Новый пост отправлен (без картинки)")
                 return
             new_sid = f"{int(time.time())}_{random.randint(1000,9999)}"
             send_for_approval(new_text, new_img, new_prompt, new_sid)
@@ -433,7 +483,9 @@ def process_callback(callback_data, chat_id, message_id):
             new_text, new_prompt = generate_post()
             new_img = generate_image(new_prompt)
             if not new_img:
-                answer_callback(chat_id, message_id, "❌ Ошибка генерации картинки")
+                send_for_approval_no_image(new_text)
+                delete_post(session_id)
+                answer_callback(chat_id, message_id, "🔄 Новый пост отправлен (без картинки)")
                 return
             new_sid = f"{int(time.time())}_{random.randint(1000,9999)}"
             delete_post(session_id)
@@ -515,11 +567,17 @@ def publish_scheduled_posts():
     print(f"[{datetime.now()}] Проверка запланированных постов...")
     posts = get_approved_posts_to_publish()
     for p in posts:
+        # Пробуем опубликовать с картинкой
         if publish_to_telegram(p["text"], p["image_path"]):
             update_post_status(p["session_id"], 'published')
             print(f"[{datetime.now()}] ✅ Опубликован {p['session_id']}")
         else:
-            print(f"[{datetime.now()}] ❌ Ошибка публикации {p['session_id']}")
+            # Если картинка не прошла, публикуем текст
+            if publish_text_only(p["text"]):
+                update_post_status(p["session_id"], 'published')
+                print(f"[{datetime.now()}] ✅ Опубликован текст {p['session_id']}")
+            else:
+                print(f"[{datetime.now()}] ❌ Ошибка публикации {p['session_id']}")
 
 # ======================== ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ =========================
 def weekly_report():
@@ -537,8 +595,10 @@ def job():
         post_text, image_prompt = generate_post()
         image_path = generate_image(image_prompt)
         if not image_path:
-            print("[ERROR] Не удалось сгенерировать картинку")
+            print("[WARN] Картинка не сгенерирована, публикую только текст")
+            send_for_approval_no_image(post_text)
             return
+
         session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
         ok = send_for_approval(post_text, image_path, image_prompt, session_id)
         if ok:
