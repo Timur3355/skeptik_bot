@@ -216,7 +216,7 @@ def clean_text(text):
 def get_topic_by_day():
     return DAY_TOPICS.get(datetime.now().weekday(), DAY_TOPICS[0])
 
-def split_text(text, max_len=1000):
+def split_text(text, max_len=3900):
     """Разбивает текст на части не длиннее max_len, сохраняя целостность предложений."""
     if len(text) <= max_len:
         return [text]
@@ -235,7 +235,7 @@ def split_text(text, max_len=1000):
         parts.append(text)
     return parts
 
-# ======================== ГЕНЕРАЦИЯ ПОСТА (КОРОТКИЙ) =========================
+# ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
     topic = get_topic_by_day()
     print(f"[DEBUG] Тема дня: {topic}")
@@ -320,7 +320,7 @@ def generate_image(prompt):
         print(f"[ERROR] Pollinations error: {e}")
         return None
 
-# ======================== ПУБЛИКАЦИЯ БЕЗ КАРТИНКИ (текст) =========================
+# ======================== ПУБЛИКАЦИЯ БЕЗ КАРТИНКИ =========================
 def publish_text_only(text):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -337,13 +337,13 @@ def publish_text_only(text):
         return False
 
 def send_for_approval_no_image(post_text):
-    # Отправляем только текст (без фото)
-    full_parts = split_text(post_text, max_len=4000)
-    for i, part in enumerate(full_parts, 1):
-        text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        if i == 1:
-            caption = f"📝 Новый пост на проверку (без картинки) (часть {i}/{len(full_parts)}):\n\n{part}"
-            reply_markup = json.dumps({
+    caption = f"📝 Новый пост на проверку (без картинки):\n\n{post_text}"
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        data = {
+            "chat_id": ADMIN_CHAT_ID,
+            "text": caption,
+            "reply_markup": json.dumps({
                 "inline_keyboard": [
                     [
                         {"text": "✅ Одобрить (без фото)", "callback_data": f"approve_noimg_{int(time.time())}"},
@@ -352,17 +352,14 @@ def send_for_approval_no_image(post_text):
                     ]
                 ]
             })
-        else:
-            caption = f"📄 Продолжение (часть {i}/{len(full_parts)}):\n\n{part}"
-            reply_markup = None
-        text_data = {"chat_id": ADMIN_CHAT_ID, "text": caption, "reply_markup": reply_markup}
-        text_resp = requests.post(text_url, json=text_data, timeout=30)
-        if text_resp.status_code != 200:
-            print(f"[ERROR] Ошибка отправки текста (часть {i}): {text_resp.text}")
-            return False
-    return True
+        }
+        resp = requests.post(url, json=data, timeout=30)
+        if resp.status_code != 200:
+            print(f"[ERROR] Ошибка модерации без фото: {resp.text}")
+    except Exception as e:
+        print(f"[ERROR] Ошибка: {e}")
 
-# ======================== ПУБЛИКАЦИЯ С КАРТИНКОЙ (разбивка, если длинный) =========================
+# ======================== ПУБЛИКАЦИЯ С КАРТИНКОЙ (в канале) =========================
 def publish_to_telegram(text, image_path):
     try:
         if not os.path.exists(image_path):
@@ -405,58 +402,53 @@ def publish_to_telegram(text, image_path):
         traceback.print_exc()
         return False
 
-# ======================== ОТПРАВКА НА МОДЕРАЦИЮ (ФОТО И ТЕКСТ ОТДЕЛЬНО) =========================
+# ======================== МОДЕРАЦИЯ (фото + отдельный полный текст) =========================
 def send_for_approval(post_text, image_path, image_prompt, session_id):
     save_post(session_id, post_text, image_path, image_prompt)
 
-    # 1. Отправляем фото отдельно (без подписи, но с пометкой)
+    # Фото с кратким началом (до 1000 символов)
+    first_part = split_text(post_text, max_len=1000)[0]
+    caption = f"📝 Новый пост на проверку (начало):\n\n{first_part}..."
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         with open(image_path, "rb") as photo:
             files = {"photo": photo}
             data = {
                 "chat_id": ADMIN_CHAT_ID,
-                "caption": "🖼️ Фото к посту (оцените качество)"
+                "caption": caption,
+                "reply_markup": json.dumps({
+                    "inline_keyboard": [
+                        [
+                            {"text": "✅ Одобрить", "callback_data": f"approve_{session_id}"},
+                            {"text": "🔄 Перегенерировать", "callback_data": f"regenerate_{session_id}"},
+                            {"text": "✏️ Редактировать", "callback_data": f"edit_{session_id}"},
+                            {"text": "❌ Отклонить", "callback_data": f"reject_{session_id}"}
+                        ]
+                    ]
+                })
             }
             resp = requests.post(url, files=files, data=data, timeout=30)
             if resp.status_code != 200:
                 print(f"[ERROR] Ошибка отправки фото: {resp.text}")
                 return False
+
+        # Полный текст разбиваем на части по 3900 символов
+        full_parts = split_text(post_text, max_len=3900)
+        for i, part in enumerate(full_parts, 1):
+            text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            text_data = {
+                "chat_id": ADMIN_CHAT_ID,
+                "text": f"📄 Полный текст поста (часть {i}/{len(full_parts)}):\n\n{part}"
+            }
+            text_resp = requests.post(text_url, json=text_data, timeout=30)
+            if text_resp.status_code != 200:
+                print(f"[ERROR] Ошибка отправки полного текста (часть {i}): {text_resp.text}")
+                return False
+
+        return True
     except Exception as e:
-        print(f"[ERROR] Ошибка при отправке фото: {e}")
+        print(f"[ERROR] Ошибка модерации: {e}")
         return False
-
-    # 2. Отправляем полный текст поста отдельным сообщением (с кнопками)
-    full_parts = split_text(post_text, max_len=4000)
-    for i, part in enumerate(full_parts, 1):
-        text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        if i == 1:
-            caption = f"📝 Текст поста (часть {i}/{len(full_parts)}):\n\n{part}"
-            reply_markup = json.dumps({
-                "inline_keyboard": [
-                    [
-                        {"text": "✅ Одобрить", "callback_data": f"approve_{session_id}"},
-                        {"text": "🔄 Перегенерировать", "callback_data": f"regenerate_{session_id}"},
-                        {"text": "✏️ Редактировать", "callback_data": f"edit_{session_id}"},
-                        {"text": "❌ Отклонить", "callback_data": f"reject_{session_id}"}
-                    ]
-                ]
-            })
-        else:
-            caption = f"📄 Текст поста (часть {i}/{len(full_parts)}):\n\n{part}"
-            reply_markup = None
-
-        text_data = {
-            "chat_id": ADMIN_CHAT_ID,
-            "text": caption,
-            "reply_markup": reply_markup
-        }
-        text_resp = requests.post(text_url, json=text_data, timeout=30)
-        if text_resp.status_code != 200:
-            print(f"[ERROR] Ошибка отправки текста (часть {i}): {text_resp.text}")
-            return False
-
-    return True
 
 def schedule_publish(session_id):
     now = datetime.now(MOSCOW_TZ)
@@ -486,9 +478,7 @@ def process_callback(callback_data, chat_id, message_id):
     print(f"[DEBUG] Callback: {action}, {session_id}")
 
     if action == "approve_noimg":
-        # Для без-фото варианта мы не сохраняем в БД, поэтому просто публикуем текст
-        # Но у нас нет сессии, поэтому лучше предложить перегенерировать
-        send_message(chat_id, "ℹ️ Функция одобрения без картинки требует доработки. Используйте 'Перегенерировать' или 'Отклонить'.")
+        send_message(chat_id, "ℹ️ Функция одобрения без картинки пока в разработке. Используйте 'Перегенерировать' или 'Отклонить'.")
         return
 
     post_data = get_post(session_id)
@@ -624,7 +614,7 @@ def weekly_report():
         msg = "📊 Недостаточно данных."
     send_message(ADMIN_CHAT_ID, msg)
 
-# ======================== ОСНОВНАЯ ЗАДАЧА (с поддержкой авто-публикации) =========================
+# ======================== ОСНОВНАЯ ЗАДАЧА =========================
 def job(auto_publish=False):
     print(f"[{datetime.now()}] Генерация поста...")
     try:
@@ -656,7 +646,7 @@ def job(auto_publish=False):
         print(f"[ERROR] job: {e}")
         traceback.print_exc()
 
-# ======================== ВЕБ-СЕРВЕР С ДВУМЯ ЭНДПОИНТАМИ =========================
+# ======================== ВЕБ-СЕРВЕР =========================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/test':
