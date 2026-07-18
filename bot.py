@@ -235,7 +235,7 @@ def split_text(text, max_len=1000):
         parts.append(text)
     return parts
 
-# ======================== ГЕНЕРАЦИЯ ПОСТА =========================
+# ======================== ГЕНЕРАЦИЯ ПОСТА (КОРОТКИЙ) =========================
 def generate_post():
     topic = get_topic_by_day()
     print(f"[DEBUG] Тема дня: {topic}")
@@ -250,7 +250,7 @@ def generate_post():
                     "Ты — автор канала «Скептик с EBITDA».\n"
                     "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
                     "НЕ выводи <think>, рассуждения — только пост.\n"
-                    "Пост должен быть содержательным, 4–5 абзацев, примерно 600–800 символов.\n"
+                    "Пост должен быть компактным: 3–4 абзаца, примерно 400–500 символов.\n"
                     "Используй эмодзи в начале абзацев, НЕ используй HTML.\n"
                     "В конце — Action Item с ✅.\n"
                     "Указывай период и источник (например, Q3 2023).\n"
@@ -263,7 +263,7 @@ def generate_post():
             }
         ],
         "temperature": 0.85,
-        "max_tokens": 250
+        "max_tokens": 200  # достаточно для ~400-500 символов
     }
 
     for attempt in range(3):
@@ -320,7 +320,7 @@ def generate_image(prompt):
         print(f"[ERROR] Pollinations error: {e}")
         return None
 
-# ======================== ПУБЛИКАЦИЯ БЕЗ КАРТИНКИ =========================
+# ======================== ПУБЛИКАЦИЯ БЕЗ КАРТИНКИ (текст) =========================
 def publish_text_only(text):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -359,7 +359,7 @@ def send_for_approval_no_image(post_text):
     except Exception as e:
         print(f"[ERROR] Ошибка: {e}")
 
-# ======================== ПУБЛИКАЦИЯ С КАРТИНКОЙ (разделение на две части) =========================
+# ======================== ПУБЛИКАЦИЯ С КАРТИНКОЙ (разбивка, если длинный) =========================
 def publish_to_telegram(text, image_path):
     try:
         if not os.path.exists(image_path):
@@ -370,7 +370,6 @@ def publish_to_telegram(text, image_path):
         first_part = parts[0] if parts else ""
         second_part = parts[1] if len(parts) > 1 else ""
 
-        # Проверяем права бота
         check_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getChatMember"
         check_params = {"chat_id": TELEGRAM_CHAT_ID, "user_id": "me"}
         check_resp = requests.get(check_url, params=check_params, timeout=10)
@@ -379,7 +378,6 @@ def publish_to_telegram(text, image_path):
                 print("[ERROR] Бот не администратор")
                 return False
 
-        # Отправляем фото с первой частью
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         with open(image_path, "rb") as photo:
             files = {"photo": photo}
@@ -389,7 +387,6 @@ def publish_to_telegram(text, image_path):
                 print(f"[ERROR] Ошибка отправки фото: {resp.text}")
                 return False
 
-        # Если есть вторая часть – отправляем текстовым сообщением
         if second_part:
             text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
             text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": f"📎 Продолжение:\n\n{second_part}"}
@@ -405,10 +402,11 @@ def publish_to_telegram(text, image_path):
         traceback.print_exc()
         return False
 
-# ======================== МОДЕРАЦИЯ (фото + полный текст отдельно) =========================
+# ======================== ОТПРАВКА НА МОДЕРАЦИЮ С РАЗБИВКОЙ ПОЛНОГО ТЕКСТА =========================
 def send_for_approval(post_text, image_path, image_prompt, session_id):
     save_post(session_id, post_text, image_path, image_prompt)
-    # Первая часть для подписи к фото (до 1000 символов)
+
+    # Фото с кратким началом
     first_part = split_text(post_text, max_len=1000)[0]
     caption = f"📝 Новый пост на проверку (начало):\n\n{first_part}..."
     try:
@@ -434,13 +432,18 @@ def send_for_approval(post_text, image_path, image_prompt, session_id):
                 print(f"[ERROR] Ошибка отправки фото: {resp.text}")
                 return False
 
-        # Отправляем полный текст отдельным сообщением
-        text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        text_data = {"chat_id": ADMIN_CHAT_ID, "text": f"📄 Полный текст поста:\n\n{post_text}"}
-        text_resp = requests.post(text_url, json=text_data, timeout=30)
-        if text_resp.status_code != 200:
-            print(f"[ERROR] Ошибка отправки полного текста: {text_resp.text}")
-            return False
+        # Полный текст разбиваем на части по 4000 символов и отправляем
+        full_parts = split_text(post_text, max_len=4000)
+        for i, part in enumerate(full_parts, 1):
+            text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            text_data = {
+                "chat_id": ADMIN_CHAT_ID,
+                "text": f"📄 Полный текст поста (часть {i}/{len(full_parts)}):\n\n{part}"
+            }
+            text_resp = requests.post(text_url, json=text_data, timeout=30)
+            if text_resp.status_code != 200:
+                print(f"[ERROR] Ошибка отправки полного текста (часть {i}): {text_resp.text}")
+                return False
 
         return True
     except Exception as e:
@@ -611,7 +614,7 @@ def weekly_report():
         msg = "📊 Недостаточно данных."
     send_message(ADMIN_CHAT_ID, msg)
 
-# ======================== ОСНОВНАЯ ЗАДАЧА (с параметром auto_publish) =========================
+# ======================== ОСНОВНАЯ ЗАДАЧА (с поддержкой авто-публикации) =========================
 def job(auto_publish=False):
     print(f"[{datetime.now()}] Генерация поста...")
     try:
@@ -643,7 +646,7 @@ def job(auto_publish=False):
         print(f"[ERROR] job: {e}")
         traceback.print_exc()
 
-# ======================== ВЕБ-СЕРВЕР (два эндпоинта: /test и /test_publish) =========================
+# ======================== ВЕБ-СЕРВЕР С ДВУМЯ ЭНДПОИНТАМИ =========================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/test':
@@ -724,9 +727,9 @@ threading.Thread(target=keep_alive, daemon=True).start()
 threading.Thread(target=poll_updates, daemon=True).start()
 
 # ======================== РАСПИСАНИЕ =========================
-schedule.every().day.at("06:55").do(job)            # 9:55 МСК
-schedule.every().day.at("07:00").do(publish_scheduled_posts)  # 10:00 МСК
-schedule.every().sunday.at("17:00").do(weekly_report)  # 20:00 МСК
+schedule.every().day.at("06:55").do(lambda: job(auto_publish=False))  # 9:55 МСК – модерация
+schedule.every().day.at("07:00").do(publish_scheduled_posts)  # 10:00 МСК – публикация одобренных
+schedule.every().sunday.at("17:00").do(weekly_report)  # 20:00 МСК – отчёт
 
 print("Бот запущен. Ожидание расписания...")
 print(f"Провайдер: {API_PROVIDER}, Модель: {MODEL_NAME}")
