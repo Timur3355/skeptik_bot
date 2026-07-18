@@ -1,7 +1,7 @@
 import requests
 import time
 import schedule
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import threading
 import urllib.request
@@ -13,26 +13,31 @@ import traceback
 import json
 import random
 import re
-import sqlite3
-from contextlib import closing
+import pytz
 
 # ======================== КОНФИГУРАЦИЯ =========================
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
+DATABASE_URL = os.getenv("DATABASE_URL")  # для PostgreSQL, опционально
 
 API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
 MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
 
-TOPICS = [
-    "логистические провалы Ozon: затраты, сроки доставки, убытки",
-    "штрафы и возвраты Wildberries: как компания зарабатывает на продавцах",
-    "долговая нагрузка Магнита: кредиты, проценты, соотношение долга к EBITDA",
-    "маркетинговые расходы Ozon: сколько тратят на привлечение клиентов и окупается ли это",
-    "технологические проблемы Wildberries: баги, сбои, инвестиции в IT",
-    "стратегия экспансии Магнита: открытие и закрытие магазинов, эффективность"
-]
+# Московское время для расписаний
+MOSCOW_TZ = pytz.timezone('Europe/Moscow')
+
+# Тематика по дням недели (0-Пн, 1-Вт, ...)
+DAY_TOPICS = {
+    0: "логистические провалы Ozon: затраты, сроки доставки, убытки",
+    1: "штрафы и возвраты Wildberries: как компания зарабатывает на продавцах",
+    2: "долговая нагрузка Магнита: кредиты, проценты, соотношение долга к EBITDA",
+    3: "маркетинговые расходы Ozon: сколько тратят на привлечение клиентов и окупается ли это",
+    4: "технологические проблемы Wildberries: баги, сбои, инвестиции в IT",
+    5: "стратегия экспансии Магнита: открытие и закрытие магазинов, эффективность",
+    6: "сравнительный анализ трёх ритейлеров: кто хуже?"   # воскресенье
+}
 
 PROVIDER_CONFIG = {
     "openai": {
@@ -62,61 +67,143 @@ API_DEFAULT_MODEL = config["default_model"]
 if not MODEL_NAME:
     MODEL_NAME = API_DEFAULT_MODEL
 
-# ======================== БАЗА ДАННЫХ =========================
-DB_PATH = "posts.db"
+# ======================== БАЗА ДАННЫХ (PostgreSQL / SQLite) =========================
+if DATABASE_URL:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    def get_db_connection():
+        return psycopg2.connect(DATABASE_URL, sslmode='require')
+    db_type = 'postgres'
+else:
+    import sqlite3
+    from contextlib import closing
+    DB_PATH = "posts.db"
+    db_type = 'sqlite'
 
 def init_db():
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        conn.execute('''
+    if db_type == 'postgres':
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute('''
             CREATE TABLE IF NOT EXISTS posts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 session_id TEXT UNIQUE,
                 text TEXT,
                 image_path TEXT,
                 image_prompt TEXT,
                 status TEXT DEFAULT 'pending',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                published_at TIMESTAMP
+                approved_at TIMESTAMP,
+                scheduled_publish_time TIMESTAMP,
+                published_at TIMESTAMP,
+                edit_pending BOOLEAN DEFAULT FALSE
             )
         ''')
-        conn.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON posts(session_id)')
-        conn.execute('CREATE INDEX IF NOT EXISTS idx_status ON posts(status)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON posts(session_id)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_status ON posts(status)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_scheduled_publish ON posts(scheduled_publish_time)')
         conn.commit()
+        cur.close()
+        conn.close()
+    else:
+        with closing(sqlite3.connect(DB_PATH)) as conn:
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS posts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT UNIQUE,
+                    text TEXT,
+                    image_path TEXT,
+                    image_prompt TEXT,
+                    status TEXT DEFAULT 'pending',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    approved_at TIMESTAMP,
+                    scheduled_publish_time TIMESTAMP,
+                    published_at TIMESTAMP,
+                    edit_pending INTEGER DEFAULT 0
+                )
+            ''')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON posts(session_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_status ON posts(status)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_scheduled_publish ON posts(scheduled_publish_time)')
+            conn.commit()
 
 init_db()
 
-def save_post(session_id, text, image_path, image_prompt):
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        conn.execute(
-            'INSERT OR REPLACE INTO posts (session_id, text, image_path, image_prompt, status, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-            (session_id, text, image_path, image_prompt, 'pending', datetime.now().isoformat())
-        )
+def execute_query(query, params=None, fetch=False, fetchone=False):
+    if db_type == 'postgres':
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor if fetch or fetchone else None)
+        cur.execute(query, params)
+        if fetch:
+            result = cur.fetchall()
+        elif fetchone:
+            result = cur.fetchone()
+        else:
+            result = None
         conn.commit()
+        cur.close()
+        conn.close()
+        return result
+    else:
+        with closing(sqlite3.connect(DB_PATH)) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute(query, params)
+            if fetch:
+                result = [dict(row) for row in cur.fetchall()]
+            elif fetchone:
+                row = cur.fetchone()
+                result = dict(row) if row else None
+            else:
+                result = None
+            conn.commit()
+            return result
+
+def save_post(session_id, text, image_path, image_prompt):
+    execute_query(
+        'INSERT OR REPLACE INTO posts (session_id, text, image_path, image_prompt, status, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        (session_id, text, image_path, image_prompt, 'pending', datetime.now().isoformat())
+    )
     print(f"[DEBUG] Пост сохранён в БД: session_id={session_id}")
 
 def get_post(session_id):
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        cursor = conn.execute('SELECT text, image_path, image_prompt, status FROM posts WHERE session_id = ?', (session_id,))
-        row = cursor.fetchone()
-        if row:
-            print(f"[DEBUG] Найден пост: session_id={session_id}, status={row[3]}")
-            return {'text': row[0], 'image_path': row[1], 'image_prompt': row[2], 'status': row[3]}
-        else:
-            print(f"[DEBUG] Пост не найден: session_id={session_id}")
-            return None
+    row = execute_query('SELECT text, image_path, image_prompt, status, scheduled_publish_time, edit_pending FROM posts WHERE session_id = ?', (session_id,), fetchone=True)
+    if row:
+        print(f"[DEBUG] Найден пост: session_id={session_id}, status={row['status']}")
+        return row
+    else:
+        print(f"[DEBUG] Пост не найден: session_id={session_id}")
+        return None
 
-def update_post_status(session_id, status):
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        conn.execute('UPDATE posts SET status = ? WHERE session_id = ?', (status, session_id))
-        if status == 'published':
-            conn.execute('UPDATE posts SET published_at = ? WHERE session_id = ?', (datetime.now().isoformat(), session_id))
-        conn.commit()
+def update_post_text(session_id, new_text):
+    execute_query('UPDATE posts SET text = ? WHERE session_id = ?', (new_text, session_id))
+
+def update_post_status(session_id, status, scheduled_time=None):
+    if scheduled_time:
+        execute_query('UPDATE posts SET status = ?, scheduled_publish_time = ?, approved_at = ? WHERE session_id = ?',
+                      (status, scheduled_time.isoformat(), datetime.now().isoformat(), session_id))
+    else:
+        execute_query('UPDATE posts SET status = ? WHERE session_id = ?', (status, session_id))
 
 def delete_post(session_id):
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        conn.execute('DELETE FROM posts WHERE session_id = ?', (session_id,))
-        conn.commit()
-        print(f"[DEBUG] Пост удалён: session_id={session_id}")
+    execute_query('DELETE FROM posts WHERE session_id = ?', (session_id,))
+    print(f"[DEBUG] Пост удалён: session_id={session_id}")
+
+def get_approved_posts_to_publish():
+    now = datetime.now().isoformat()
+    rows = execute_query(
+        'SELECT session_id, text, image_path FROM posts WHERE status = "approved" AND scheduled_publish_time <= ?',
+        (now,), fetch=True
+    )
+    return rows
+
+def get_weekly_stats():
+    week_ago = (datetime.now() - timedelta(days=7)).isoformat()
+    rows = execute_query(
+        'SELECT COUNT(*) as total, SUM(CASE WHEN status="published" THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status="rejected" THEN 1 ELSE 0 END) as rejected FROM posts WHERE created_at >= ?',
+        (week_ago,), fetchone=True
+    )
+    return rows
 
 # ======================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =========================
 def clean_text(text):
@@ -125,10 +212,14 @@ def clean_text(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
+def get_topic_by_day():
+    weekday = datetime.now().weekday()
+    return DAY_TOPICS.get(weekday, DAY_TOPICS[0])
+
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
-    topic = random.choice(TOPICS)
-    print(f"[DEBUG] Выбрана тема: {topic}")
+    topic = get_topic_by_day()  # теперь по дням недели
+    print(f"[DEBUG] Выбрана тема (день недели): {topic}")
 
     headers = API_HEADERS_FUNC(DEEPSEEK_API_KEY)
     payload = {
@@ -144,6 +235,7 @@ def generate_post():
                     "Используй эмодзи в начале абзацев (например, 📦, 💰, 📊, ⚠️, 🔥, 📉).\n"
                     "НЕ используй HTML-теги (<b>, <i> и т.д.).\n"
                     "В конце — Action Item с ✅ (одно предложение).\n"
+                    "Указывай конкретный период (например, Q1 2024) и источник (например, 'по данным отчёта по МСФО').\n"
                     "После текста === и описание картинки (англ., 3–4 слова)."
                 )
             },
@@ -210,7 +302,7 @@ def generate_image(prompt):
         print(f"[ERROR] Pollinations error: {e}")
         return None
 
-# ======================== ПУБЛИКАЦИЯ В КАНАЛ (БЕЗ ОБРЕЗКИ) =========================
+# ======================== ПУБЛИКАЦИЯ В КАНАЛ =========================
 def publish_to_telegram(text, image_path):
     try:
         if not os.path.exists(image_path):
@@ -218,7 +310,6 @@ def publish_to_telegram(text, image_path):
             return False
 
         print(f"[DEBUG] Длина текста перед публикацией: {len(text)} символов")
-        # Проверяем, не превышает ли лимит Telegram (1024)
         if len(text) > 1024:
             print(f"[WARN] Текст длиннее 1024 символов ({len(text)}), Telegram может обрезать.")
 
@@ -240,7 +331,6 @@ def publish_to_telegram(text, image_path):
             data = {
                 "chat_id": TELEGRAM_CHAT_ID,
                 "caption": text
-                # parse_mode НЕ используем
             }
             response = requests.post(url, files=files, data=data, timeout=30)
         if response.status_code == 200:
@@ -270,6 +360,7 @@ def send_for_approval(post_text, image_path, image_prompt, session_id):
                         [
                             {"text": "✅ Одобрить", "callback_data": f"approve_{session_id}"},
                             {"text": "🔄 Перегенерировать", "callback_data": f"regenerate_{session_id}"},
+                            {"text": "✏️ Редактировать", "callback_data": f"edit_{session_id}"},
                             {"text": "❌ Отклонить", "callback_data": f"reject_{session_id}"}
                         ]
                     ]
@@ -284,7 +375,28 @@ def send_for_approval(post_text, image_path, image_prompt, session_id):
         print(f"[ERROR] Ошибка отправки на модерацию: {e}")
         return False
 
+def schedule_publish(session_id):
+    # Вычисляем время публикации: 10:00 сегодня, если сейчас < 10:00, иначе 10:00 завтра
+    now = datetime.now(MOSCOW_TZ)
+    publish_time = now.replace(hour=10, minute=0, second=0, microsecond=0)
+    if now >= publish_time:
+        publish_time += timedelta(days=1)
+    update_post_status(session_id, 'approved', scheduled_time=publish_time)
+    # Уведомляем админа
+    msg = f"✅ Пост одобрен и запланирован к публикации в {publish_time.strftime('%d.%m.%Y %H:%M')} МСК."
+    send_message(ADMIN_CHAT_ID, msg)
+
+def send_message(chat_id, text):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        data = {"chat_id": chat_id, "text": text}
+        requests.post(url, json=data, timeout=10)
+    except Exception as e:
+        print(f"[ERROR] Ошибка отправки сообщения: {e}")
+
 # ======================== ОБРАБОТЧИК КНОПОК =========================
+edit_mode = {}  # chat_id -> session_id (ожидание текста редактирования)
+
 def process_callback(callback_data, chat_id, message_id):
     parts = callback_data.split('_', 1)
     if len(parts) != 2:
@@ -293,7 +405,6 @@ def process_callback(callback_data, chat_id, message_id):
     print(f"[DEBUG] Callback: action={action}, session_id={session_id}")
     post_data = get_post(session_id)
     if not post_data:
-        # Автоматически генерируем новый пост
         answer_callback(chat_id, message_id, "🔄 Черновик устарел, генерирую новый...")
         try:
             new_text, new_prompt = generate_post()
@@ -309,23 +420,18 @@ def process_callback(callback_data, chat_id, message_id):
         return
 
     if post_data["status"] == "published":
-        answer_callback(chat_id, message_id, "ℹ️ Этот пост уже был опубликован ранее.")
+        answer_callback(chat_id, message_id, "ℹ️ Этот пост уже был опубликован.")
         return
     if post_data["status"] == "rejected":
         answer_callback(chat_id, message_id, "ℹ️ Этот пост был отклонён.")
         return
+    if post_data["status"] == "approved":
+        answer_callback(chat_id, message_id, "ℹ️ Этот пост уже одобрен и ожидает публикации.")
+        return
 
     if action == "approve":
-        for attempt in range(3):
-            ok = publish_to_telegram(post_data["text"], post_data["image_path"])
-            if ok:
-                update_post_status(session_id, 'published')
-                answer_callback(chat_id, message_id, "✅ Пост опубликован!")
-                return
-            else:
-                print(f"[WARN] Попытка публикации {attempt+1} не удалась")
-                time.sleep(2)
-        answer_callback(chat_id, message_id, "❌ Не удалось опубликовать пост. Проверьте логи.")
+        schedule_publish(session_id)
+        answer_callback(chat_id, message_id, f"✅ Пост одобрен, будет опубликован в 10:00 МСК.")
     elif action == "regenerate":
         answer_callback(chat_id, message_id, "🔄 Генерирую новый...")
         try:
@@ -340,6 +446,9 @@ def process_callback(callback_data, chat_id, message_id):
             answer_callback(chat_id, message_id, "🔄 Новый пост отправлен на проверку.")
         except Exception as e:
             answer_callback(chat_id, message_id, f"❌ Ошибка перегенерации: {str(e)[:100]}")
+    elif action == "edit":
+        answer_callback(chat_id, message_id, "✏️ Пришли новый текст поста (только текст, без картинки и без кнопок).")
+        edit_mode[chat_id] = session_id
     elif action == "reject":
         update_post_status(session_id, 'rejected')
         answer_callback(chat_id, message_id, "❌ Пост отклонён.")
@@ -352,13 +461,13 @@ def answer_callback(chat_id, message_id, text):
     except Exception as e:
         print(f"[ERROR] Ошибка ответа на callback: {e}")
 
-# ======================== ПОЛЛИНГ ОБНОВЛЕНИЙ =========================
+# ======================== ПОЛЛИНГ ОБНОВЛЕНИЙ (включая текстовые для редактирования) =========================
 def poll_updates():
     offset = 0
     while True:
         try:
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
-            params = {"offset": offset, "timeout": 30, "allowed_updates": ["callback_query"]}
+            params = {"offset": offset, "timeout": 30, "allowed_updates": ["callback_query", "message"]}
             response = requests.get(url, params=params, timeout=35)
             if response.status_code != 200:
                 print(f"[ERROR] getUpdates ошибка {response.status_code}")
@@ -384,11 +493,59 @@ def poll_updates():
                             requests.post(answer_callback_url, json=answer_data, timeout=10)
                         except:
                             pass
+                elif "message" in update and update["message"].get("chat", {}).get("id") == int(ADMIN_CHAT_ID):
+                    # Проверяем, находится ли админ в режиме редактирования
+                    chat_id = update["message"]["chat"]["id"]
+                    if chat_id in edit_mode:
+                        session_id = edit_mode.pop(chat_id)
+                        new_text = update["message"].get("text")
+                        if new_text:
+                            # Обновляем текст поста
+                            update_post_text(session_id, new_text)
+                            # Отправляем обновлённый пост на проверку (с новым session_id, чтобы не конфликтовать)
+                            post_data = get_post(session_id)
+                            if post_data:
+                                # Создаём новый session_id для обновлённого поста
+                                new_session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
+                                # Копируем данные с новым id
+                                save_post(new_session_id, new_text, post_data["image_path"], post_data["image_prompt"])
+                                # Удаляем старый
+                                delete_post(session_id)
+                                # Отправляем на проверку
+                                send_for_approval(new_text, post_data["image_path"], post_data["image_prompt"], new_session_id)
+                                send_message(chat_id, "✅ Пост обновлён и отправлен на повторную проверку.")
+                            else:
+                                send_message(chat_id, "❌ Не удалось найти пост для обновления.")
+                        else:
+                            send_message(chat_id, "❌ Текст не может быть пустым. Попробуй ещё раз или отклони пост.")
         except Exception as e:
             print(f"[ERROR] poll_updates: {e}")
             time.sleep(5)
 
-# ======================== ОСНОВНАЯ ЗАДАЧА (9:55) =========================
+# ======================== ПУБЛИКАЦИЯ ЗАПЛАНИРОВАННЫХ ПОСТОВ =========================
+def publish_scheduled_posts():
+    print(f"[{datetime.now()}] Проверка запланированных постов...")
+    posts = get_approved_posts_to_publish()
+    for post in posts:
+        session_id = post['session_id']
+        text = post['text']
+        image_path = post['image_path']
+        if publish_to_telegram(text, image_path):
+            update_post_status(session_id, 'published')
+            print(f"[{datetime.now()}] ✅ Опубликован пост {session_id}")
+        else:
+            print(f"[{datetime.now()}] ❌ Ошибка публикации поста {session_id}")
+
+# ======================== ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ =========================
+def weekly_report():
+    stats = get_weekly_stats()
+    if stats:
+        msg = f"📊 Еженедельный отчёт:\nОдобрено постов: {stats['published']}\nОтклонено: {stats['rejected']}\nВсего создано: {stats['total']}"
+    else:
+        msg = "📊 Недостаточно данных для отчёта."
+    send_message(ADMIN_CHAT_ID, msg)
+
+# ======================== ОСНОВНАЯ ЗАДАЧА (9:55 МСК) =========================
 def job():
     print(f"[{datetime.now()}] Генерация поста для проверки...")
     try:
@@ -465,7 +622,12 @@ threading.Thread(target=keep_alive, daemon=True).start()
 threading.Thread(target=poll_updates, daemon=True).start()
 
 # ======================== РАСПИСАНИЕ =========================
-schedule.every().day.at("09:55").do(job)
+# 6:55 UTC = 9:55 МСК
+schedule.every().day.at("06:55").do(job)
+# Публикация запланированных постов в 10:00 МСК (7:00 UTC)
+schedule.every().day.at("07:00").do(publish_scheduled_posts)
+# Еженедельный отчёт по воскресеньям в 20:00 МСК (17:00 UTC)
+schedule.every().sunday.at("17:00").do(weekly_report)
 
 print("Бот запущен. Ожидание расписания...")
 print(f"Провайдер: {API_PROVIDER}, Модель: {MODEL_NAME}")

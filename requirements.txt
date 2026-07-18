@@ -1,2 +1,4 @@
 requests
 schedule
+pytz
+psycopg2-binary
