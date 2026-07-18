@@ -20,7 +20,7 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = os.getenv("DATABASE_URL")  # опционально
 
 API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
 MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
@@ -216,15 +216,20 @@ def clean_text(text):
 def get_topic_by_day():
     return DAY_TOPICS.get(datetime.now().weekday(), DAY_TOPICS[0])
 
-def smart_truncate(text, max_len=750):  # уменьшил до 750
+def smart_truncate(text, max_len=650):
+    """Обрезает текст до max_len символов, стараясь сохранить целостность предложений"""
     if len(text) <= max_len:
         return text
     truncated = text[:max_len]
+    # Ищем последнюю точку, вопросительный или восклицательный знак
+    last_punct = max(truncated.rfind('.'), truncated.rfind('!'), truncated.rfind('?'))
+    if last_punct > 0:
+        return truncated[:last_punct+1] + " ... (продолжение в канале)"
+    # Если знаков нет – ищем последний пробел
     last_space = truncated.rfind(' ')
     if last_space > 0:
         return truncated[:last_space] + "... (продолжение в канале)"
-    else:
-        return truncated + "... (продолжение в канале)"
+    return truncated + "... (продолжение в канале)"
 
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
@@ -241,7 +246,7 @@ def generate_post():
                     "Ты — автор канала «Скептик с EBITDA».\n"
                     "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
                     "НЕ выводи <think>, рассуждения — только пост.\n"
-                    "Пост должен быть не более 500 символов (3–4 абзаца).\n"  # уменьшил требование
+                    "Пост должен быть очень коротким (максимум 500 символов).\n"
                     "Используй эмодзи в начале абзацев, НЕ используй HTML.\n"
                     "В конце — Action Item с ✅.\n"
                     "Указывай период и источник (например, Q1 2024).\n"
@@ -250,11 +255,11 @@ def generate_post():
             },
             {
                 "role": "user",
-                "content": f"Напиши короткий пост на тему: {topic}. Используй свежие цифры из отчётов."
+                "content": f"Напиши пост на тему: {topic}. Используй свежие цифры из отчётов."
             }
         ],
         "temperature": 0.85,
-        "max_tokens": 110  # уменьшено до 110
+        "max_tokens": 90   # уменьшено до 90
     }
 
     for attempt in range(3):
@@ -314,7 +319,8 @@ def generate_image(prompt):
 # ======================== ПУБЛИКАЦИЯ БЕЗ КАРТИНКИ (FALLBACK) =========================
 def publish_text_only(text):
     try:
-        text = smart_truncate(text, 750)
+        if len(text) > 650:
+            text = smart_truncate(text, 650)
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
         resp = requests.post(url, json=data, timeout=30)
@@ -329,7 +335,7 @@ def publish_text_only(text):
         return False
 
 def send_for_approval_no_image(post_text):
-    display_text = smart_truncate(post_text, 750)
+    display_text = smart_truncate(post_text, 650)
     caption = f"📝 Новый пост на проверку (без картинки):\n\n{display_text}"
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -340,8 +346,8 @@ def send_for_approval_no_image(post_text):
                 "inline_keyboard": [
                     [
                         {"text": "✅ Одобрить (без фото)", "callback_data": f"approve_noimg_{int(time.time())}"},
-                        {"text": "🔄 Перегенерировать", "callback_data": "regenerate_noimg"},
-                        {"text": "❌ Отклонить", "callback_data": "reject_noimg"}
+                        {"text": "🔄 Перегенерировать", "callback_data": "regenerate"},
+                        {"text": "❌ Отклонить", "callback_data": "reject"}
                     ]
                 ]
             })
@@ -358,7 +364,7 @@ def publish_to_telegram(text, image_path):
         if not os.path.exists(image_path):
             print("[ERROR] Файл картинки не найден")
             return False
-        text = smart_truncate(text, 750)
+        text = smart_truncate(text, 650)
         print(f"[DEBUG] Длина текста после обрезки: {len(text)}")
 
         check_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getChatMember"
@@ -388,7 +394,7 @@ def publish_to_telegram(text, image_path):
 # ======================== ОТПРАВКА НА ПРОВЕРКУ (с картинкой) =========================
 def send_for_approval(post_text, image_path, image_prompt, session_id):
     save_post(session_id, post_text, image_path, image_prompt)
-    display_text = smart_truncate(post_text, 750)
+    display_text = smart_truncate(post_text, 650)
     caption = f"📝 Новый пост на проверку:\n\n{display_text}"
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
@@ -444,9 +450,9 @@ def process_callback(callback_data, chat_id, message_id):
     action, session_id = parts
     print(f"[DEBUG] Callback: {action}, {session_id}")
 
-    # Обработка без-картинки (упрощённо, чтобы не зависнуть)
-    if action in ("approve_noimg", "regenerate_noimg", "reject_noimg"):
-        send_message(chat_id, "ℹ️ Функция для постов без картинки в разработке. Используйте 'Перегенерировать' или 'Отклонить' для постов с картинкой.")
+    # Если это одобрение без картинки (заглушка)
+    if action == "approve_noimg":
+        send_message(chat_id, "ℹ️ Функция одобрения без картинки пока в разработке. Используйте 'Перегенерировать' или 'Отклонить'.")
         return
 
     post_data = get_post(session_id)
@@ -589,7 +595,7 @@ def job():
         post_text, image_prompt = generate_post()
         image_path = generate_image(image_prompt)
         if not image_path:
-            print("[WARN] Картинка не сгенерирована, отправляю только текст")
+            print("[WARN] Картинка не сгенерирована, публикую только текст")
             send_for_approval_no_image(post_text)
             return
 
