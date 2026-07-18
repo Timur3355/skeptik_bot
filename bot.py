@@ -216,7 +216,7 @@ def clean_text(text):
 def get_topic_by_day():
     return DAY_TOPICS.get(datetime.now().weekday(), DAY_TOPICS[0])
 
-def smart_truncate(text, max_len=500):
+def smart_truncate(text, max_len=750):
     """Обрезает текст до max_len, сохраняя целостность предложений"""
     if len(text) <= max_len:
         return text
@@ -245,8 +245,8 @@ def generate_post():
                     "Ты — автор канала «Скептик с EBITDA».\n"
                     "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
                     "НЕ выводи <think>, рассуждения — только пост.\n"
-                    "Пост должен быть ОЧЕНЬ КОРОТКИМ: максимум 3 коротких абзаца, не более 300 символов.\n"
-                    "Используй 1-2 эмодзи в начале, НЕ используй HTML.\n"
+                    "Пост должен быть длиной около 500–600 символов (4–5 коротких абзацев).\n"
+                    "Используй эмодзи в начале абзацев, НЕ используй HTML.\n"
                     "В конце — Action Item с ✅ (одно предложение).\n"
                     "Указывай период и источник (например, Q3 2023).\n"
                     "После текста === и описание картинки (англ., 2-3 слова)."
@@ -258,7 +258,7 @@ def generate_post():
             }
         ],
         "temperature": 0.85,
-        "max_tokens": 60  # жёсткое ограничение
+        "max_tokens": 150
     }
 
     for attempt in range(3):
@@ -318,7 +318,7 @@ def generate_image(prompt):
 # ======================== ПУБЛИКАЦИЯ БЕЗ КАРТИНКИ =========================
 def publish_text_only(text):
     try:
-        text = smart_truncate(text, 500)
+        text = smart_truncate(text, 750)
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
         resp = requests.post(url, json=data, timeout=30)
@@ -333,7 +333,7 @@ def publish_text_only(text):
         return False
 
 def send_for_approval_no_image(post_text):
-    display_text = smart_truncate(post_text, 500)
+    display_text = smart_truncate(post_text, 750)
     caption = f"📝 Новый пост на проверку (без картинки):\n\n{display_text}"
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -362,7 +362,7 @@ def publish_to_telegram(text, image_path):
         if not os.path.exists(image_path):
             print("[ERROR] Файл картинки не найден")
             return False
-        text = smart_truncate(text, 500)
+        text = smart_truncate(text, 750)
         print(f"[DEBUG] Длина текста после обрезки: {len(text)}")
 
         check_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getChatMember"
@@ -392,7 +392,7 @@ def publish_to_telegram(text, image_path):
 # ======================== ОТПРАВКА НА ПРОВЕРКУ (с картинкой) =========================
 def send_for_approval(post_text, image_path, image_prompt, session_id):
     save_post(session_id, post_text, image_path, image_prompt)
-    display_text = smart_truncate(post_text, 500)
+    display_text = smart_truncate(post_text, 750)
     caption = f"📝 Новый пост на проверку:\n\n{display_text}"
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
