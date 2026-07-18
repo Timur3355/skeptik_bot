@@ -216,19 +216,25 @@ def clean_text(text):
 def get_topic_by_day():
     return DAY_TOPICS.get(datetime.now().weekday(), DAY_TOPICS[0])
 
-def smart_truncate(text, max_len=750):
-    """Обрезает текст до max_len, сохраняя целостность предложений"""
+def split_text(text, max_len=1000):
+    """Разбивает текст на части не длиннее max_len, сохраняя целостность предложений."""
     if len(text) <= max_len:
-        return text
-    truncated = text[:max_len]
-    # Ищем последнюю точку, восклицание или вопрос
-    last_punct = max(truncated.rfind('.'), truncated.rfind('!'), truncated.rfind('?'))
-    if last_punct > 0:
-        return truncated[:last_punct+1] + " ... (продолжение в канале)"
-    last_space = truncated.rfind(' ')
-    if last_space > 0:
-        return truncated[:last_space] + "... (продолжение в канале)"
-    return truncated + "... (продолжение в канале)"
+        return [text]
+    parts = []
+    while len(text) > max_len:
+        chunk = text[:max_len]
+        # Ищем последнюю точку, восклицание или вопрос в пределах max_len
+        last_punct = max(chunk.rfind('.'), chunk.rfind('!'), chunk.rfind('?'))
+        if last_punct > 0:
+            split_pos = last_punct + 1
+        else:
+            last_space = chunk.rfind(' ')
+            split_pos = last_space if last_space > 0 else max_len
+        parts.append(text[:split_pos].strip())
+        text = text[split_pos:].strip()
+    if text:
+        parts.append(text)
+    return parts
 
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
@@ -245,11 +251,11 @@ def generate_post():
                     "Ты — автор канала «Скептик с EBITDA».\n"
                     "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
                     "НЕ выводи <think>, рассуждения — только пост.\n"
-                    "Пост должен быть длиной около 500–600 символов (4–5 коротких абзацев).\n"
+                    "Пост должен быть содержательным, 4–5 абзацев, примерно 600–800 символов.\n"
                     "Используй эмодзи в начале абзацев, НЕ используй HTML.\n"
-                    "В конце — Action Item с ✅ (одно предложение).\n"
+                    "В конце — Action Item с ✅.\n"
                     "Указывай период и источник (например, Q3 2023).\n"
-                    "После текста === и описание картинки (англ., 2-3 слова)."
+                    "После текста === и описание картинки (англ., 3–4 слова)."
                 )
             },
             {
@@ -258,7 +264,7 @@ def generate_post():
             }
         ],
         "temperature": 0.85,
-        "max_tokens": 150
+        "max_tokens": 280  # достаточно для длинного поста
     }
 
     for attempt in range(3):
@@ -315,10 +321,10 @@ def generate_image(prompt):
         print(f"[ERROR] Pollinations error: {e}")
         return None
 
-# ======================== ПУБЛИКАЦИЯ БЕЗ КАРТИНКИ =========================
+# ======================== ПУБЛИКАЦИЯ БЕЗ КАРТИНКИ (текст только) =========================
 def publish_text_only(text):
     try:
-        text = smart_truncate(text, 750)
+        # Просто отправляем весь текст как одно сообщение
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
         resp = requests.post(url, json=data, timeout=30)
@@ -333,8 +339,7 @@ def publish_text_only(text):
         return False
 
 def send_for_approval_no_image(post_text):
-    display_text = smart_truncate(post_text, 750)
-    caption = f"📝 Новый пост на проверку (без картинки):\n\n{display_text}"
+    caption = f"📝 Новый пост на проверку (без картинки):\n\n{post_text}"
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         data = {
@@ -356,15 +361,18 @@ def send_for_approval_no_image(post_text):
     except Exception as e:
         print(f"[ERROR] Ошибка: {e}")
 
-# ======================== ПУБЛИКАЦИЯ В КАНАЛ С КАРТИНКОЙ =========================
+# ======================== ПУБЛИКАЦИЯ С КАРТИНКОЙ (разделение на две части) =========================
 def publish_to_telegram(text, image_path):
     try:
         if not os.path.exists(image_path):
             print("[ERROR] Файл картинки не найден")
             return False
-        text = smart_truncate(text, 750)
-        print(f"[DEBUG] Длина текста после обрезки: {len(text)}")
 
+        parts = split_text(text, max_len=1000)
+        first_part = parts[0] if parts else ""
+        second_part = parts[1] if len(parts) > 1 else ""
+
+        # Проверяем права бота
         check_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getChatMember"
         check_params = {"chat_id": TELEGRAM_CHAT_ID, "user_id": "me"}
         check_resp = requests.get(check_url, params=check_params, timeout=10)
@@ -373,27 +381,41 @@ def publish_to_telegram(text, image_path):
                 print("[ERROR] Бот не администратор")
                 return False
 
+        # Отправляем фото с первой частью
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         with open(image_path, "rb") as photo:
             files = {"photo": photo}
-            data = {"chat_id": TELEGRAM_CHAT_ID, "caption": text}
+            data = {"chat_id": TELEGRAM_CHAT_ID, "caption": first_part}
             resp = requests.post(url, files=files, data=data, timeout=30)
-        if resp.status_code == 200:
-            print("[DEBUG] Публикация успешна")
-            return True
-        else:
-            print(f"[ERROR] Telegram ответ: {resp.text}")
-            return False
+            if resp.status_code != 200:
+                print(f"[ERROR] Ошибка отправки фото: {resp.text}")
+                return False
+
+        # Если есть вторая часть – отправляем текстовым сообщением
+        if second_part:
+            text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": f"📎 Продолжение:\n\n{second_part}"}
+            text_resp = requests.post(text_url, json=text_data, timeout=30)
+            if text_resp.status_code != 200:
+                print(f"[ERROR] Ошибка отправки продолжения: {text_resp.text}")
+                return False
+
+        print("[DEBUG] Публикация успешна")
+        return True
     except Exception as e:
         print(f"[ERROR] Ошибка публикации: {e}")
         traceback.print_exc()
         return False
 
-# ======================== ОТПРАВКА НА ПРОВЕРКУ (с картинкой) =========================
+# ======================== ОТПРАВКА НА МОДЕРАЦИЮ (разделение на две части) =========================
 def send_for_approval(post_text, image_path, image_prompt, session_id):
     save_post(session_id, post_text, image_path, image_prompt)
-    display_text = smart_truncate(post_text, 750)
-    caption = f"📝 Новый пост на проверку:\n\n{display_text}"
+    parts = split_text(post_text, max_len=1000)
+    first_part = parts[0] if parts else ""
+    second_part = parts[1] if len(parts) > 1 else ""
+
+    # Отправляем фото с первой частью
+    caption = f"📝 Новый пост на проверку (часть 1):\n\n{first_part}"
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         with open(image_path, "rb") as photo:
@@ -414,9 +436,20 @@ def send_for_approval(post_text, image_path, image_prompt, session_id):
             }
             resp = requests.post(url, files=files, data=data, timeout=30)
             if resp.status_code != 200:
-                print(f"[ERROR] Ошибка отправки на модерацию: {resp.text}")
+                print(f"[ERROR] Ошибка модерации (часть 1): {resp.text}")
                 return False
-            return True
+
+        # Если есть вторая часть – отправляем текстовым сообщением
+        if second_part:
+            text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            text_caption = f"📝 Новый пост на проверку (часть 2):\n\n{second_part}"
+            text_data = {"chat_id": ADMIN_CHAT_ID, "text": text_caption}
+            text_resp = requests.post(text_url, json=text_data, timeout=30)
+            if text_resp.status_code != 200:
+                print(f"[ERROR] Ошибка модерации (часть 2): {text_resp.text}")
+                return False
+
+        return True
     except Exception as e:
         print(f"[ERROR] Ошибка модерации: {e}")
         return False
@@ -566,10 +599,12 @@ def publish_scheduled_posts():
     print(f"[{datetime.now()}] Проверка запланированных постов...")
     posts = get_approved_posts_to_publish()
     for p in posts:
+        # Пробуем опубликовать с картинкой (разбивка уже внутри)
         if publish_to_telegram(p["text"], p["image_path"]):
             update_post_status(p["session_id"], 'published')
             print(f"[{datetime.now()}] ✅ Опубликован {p['session_id']}")
         else:
+            # Если не удалось с картинкой – публикуем только текст
             if publish_text_only(p["text"]):
                 update_post_status(p["session_id"], 'published')
                 print(f"[{datetime.now()}] ✅ Опубликован текст {p['session_id']}")
