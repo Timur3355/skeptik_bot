@@ -296,7 +296,6 @@ def split_text(text, max_len=3000):
     return parts
 
 def create_fallback_image():
-    """Создаёт простую заглушку, если нет изображений."""
     try:
         from PIL import Image, ImageDraw, ImageFont
         img = Image.new('RGB', (1200, 800), color='black')
@@ -312,23 +311,15 @@ def create_fallback_image():
         print(f"[WARN] Не удалось создать заглушку: {e}")
         open("fallback.jpg", "a").close()
 
-# ======================== ГЕНЕРАЦИЯ КАРТИНКИ (С РЕЗЕРВАМИ) =========================
+# ======================== ГЕНЕРАЦИЯ КАРТИНКИ (без Cloudflare) =========================
 def generate_image(prompt, max_attempts=2):
     if len(prompt) > 150:
         prompt = prompt[:150]
-
-    # Здесь укажите URL вашего Cloudflare Worker
-    CLOUDFLARE_WORKER_URL = "https://image-generator.ваш-аккаунт.workers.dev"
 
     services = [
         {
             "name": "Pollinations",
             "url": lambda p: f"https://image.pollinations.ai/prompt/{urllib.parse.quote(p + str(random.randint(1,100000)))}?width=1200&height=800&seed={random.randint(1,999999)}&t={int(time.time())}",
-            "timeout": 90
-        },
-        {
-            "name": "Cloudflare Worker",
-            "url": lambda p: f"{CLOUDFLARE_WORKER_URL}?prompt={urllib.parse.quote(p)}",
             "timeout": 90
         },
         {
