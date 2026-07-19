@@ -88,7 +88,7 @@ def get_topic_from_news():
 def get_topic_by_analytics():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
-        'SELECT topic, rating, views, reactions FROM posts WHERE status = "published" AND published_at >= ? AND topic IS NOT NULL AND topic != ""',
+        "SELECT topic, rating, views, reactions FROM posts WHERE status = 'published' AND published_at >= ? AND topic IS NOT NULL AND topic != ''",
         (week_ago,), fetch=True
     )
     if not rows:
@@ -259,7 +259,7 @@ def delete_post(session_id):
 def get_approved_posts_to_publish():
     now = datetime.now().isoformat()
     rows = execute_query(
-        'SELECT session_id, text, image_path FROM posts WHERE status = "approved" AND scheduled_publish_time <= ?',
+        "SELECT session_id, text, image_path FROM posts WHERE status = 'approved' AND scheduled_publish_time <= ?",
         (now,), fetch=True
     )
     return rows
@@ -267,7 +267,7 @@ def get_approved_posts_to_publish():
 def get_weekly_stats():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
-        'SELECT COUNT(*) as total, SUM(CASE WHEN status="published" THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status="rejected" THEN 1 ELSE 0 END) as rejected FROM posts WHERE created_at >= ?',
+        "SELECT COUNT(*) as total, SUM(CASE WHEN status='published' THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status='rejected' THEN 1 ELSE 0 END) as rejected FROM posts WHERE created_at >= ?",
         (week_ago,), fetchone=True
     )
     return rows
@@ -280,7 +280,6 @@ def clean_text(text):
     return text.strip()
 
 def split_text(text, max_len=3000):
-    """Разбивает текст на части не длиннее max_len, сохраняя целостность предложений."""
     if len(text) <= max_len:
         return [text]
     parts = []
@@ -351,7 +350,6 @@ def generate_post():
                 post_text = full_text.strip()
                 image_prompt = ""
             if len(image_prompt) < 10:
-                # Используем общий промпт вместо первой фразы (она может быть длинной)
                 image_prompt = "retail comparison illustration, business graph, sarcastic, modern, colorful"
             return post_text, image_prompt, topic
         except requests.exceptions.Timeout:
@@ -364,9 +362,8 @@ def generate_post():
             time.sleep(3)
     raise Exception("Не удалось получить ответ")
 
-# ======================== ГЕНЕРАЦИЯ КАРТИНКИ (с проверкой на чёрное) =========================
+# ======================== ГЕНЕРАЦИЯ КАРТИНКИ =========================
 def is_image_black(image_path):
-    """Проверяет, является ли изображение почти полностью чёрным."""
     try:
         from PIL import Image
         img = Image.open(image_path)
@@ -377,11 +374,10 @@ def is_image_black(image_path):
         avg = sum(pixels) / len(pixels)
         return avg < 30
     except Exception as e:
-        print(f"[WARN] Не удалось проверить картинку на чёрный цвет: {e}")
+        print(f"[WARN] Не удалось проверить картинку: {e}")
         return False
 
 def generate_image(prompt, max_attempts=3):
-    """Генерирует картинку через Pollinations.ai с проверкой на чёрное изображение."""
     if len(prompt) > 100:
         prompt = prompt[:100]
 
@@ -405,7 +401,7 @@ def generate_image(prompt, max_attempts=3):
                 with open("temp_image.jpg", "wb") as f:
                     f.write(content)
                 if is_image_black("temp_image.jpg"):
-                    print("[WARN] Обнаружено чёрное изображение, пробуем с упрощённым промптом")
+                    print("[WARN] Чёрное изображение, пробуем упрощённый промпт")
                     os.remove("temp_image.jpg")
                     prompt = "retail illustration, business, comparison, sarcastic, modern"
                     continue
@@ -416,7 +412,6 @@ def generate_image(prompt, max_attempts=3):
             print(f"[WARN] Ошибка Pollinations (попытка {attempt+1}): {e}")
         time.sleep(3)
 
-    # Последняя попытка с самым простым промптом
     try:
         print("[DEBUG] Последняя попытка с минимальным промптом")
         url = f"https://image.pollinations.ai/prompt/business%20illustration?width=1200&height=800&seed={random.randint(1,999999)}&t={int(time.time())}"
@@ -448,7 +443,6 @@ def publish_text_only(text):
         print(f"[ERROR] Ошибка: {e}")
         return False
 
-# ======================== ОТПРАВКА НА МОДЕРАЦИЮ (БЕЗ КАРТИНКИ) =========================
 def send_for_approval_no_image(post_text, topic):
     session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
     save_post(session_id, post_text, "", "", topic)
@@ -477,7 +471,7 @@ def send_for_approval_no_image(post_text, topic):
             return False
     return True
 
-# ======================== ПУБЛИКАЦИЯ В КАНАЛ С РАЗБИВКОЙ =========================
+# ======================== ПУБЛИКАЦИЯ В КАНАЛ =========================
 def publish_to_telegram(text, image_path, session_id=None):
     try:
         if not os.path.exists(image_path):
@@ -525,11 +519,10 @@ def publish_to_telegram(text, image_path, session_id=None):
         traceback.print_exc()
         return False
 
-# ======================== ОТПРАВКА НА МОДЕРАЦИЮ (С КАРТИНКОЙ И РАЗБИВКОЙ ТЕКСТА) =========================
+# ======================== ОТПРАВКА НА МОДЕРАЦИЮ =========================
 def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
     save_post(session_id, post_text, image_path, image_prompt, topic)
 
-    # Отправляем фото с кратким началом
     first_part = split_text(post_text, max_len=1000)[0]
     caption = f"📝 Новый пост на проверку (начало):\n\n{first_part}..."
     try:
@@ -555,7 +548,6 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
                 print(f"[ERROR] Ошибка отправки фото: {resp.text}")
                 return False
 
-        # Разбиваем полный текст на части по 3000 символов
         full_parts = split_text(post_text, max_len=3000)
         print(f"[DEBUG] Полный текст разбит на {len(full_parts)} частей")
         for i, part in enumerate(full_parts, 1):
@@ -597,13 +589,13 @@ def send_message(chat_id, text):
 def check_and_repost():
     cutoff = (datetime.now() - timedelta(days=30)).isoformat()
     rows = execute_query(
-        'SELECT session_id, text FROM posts WHERE status = "published" AND reposted = 0 AND rating >= 3 AND published_at <= ?',
+        "SELECT session_id, text FROM posts WHERE status = 'published' AND reposted = 0 AND rating >= 3 AND published_at <= ?",
         (cutoff,), fetch=True
     )
     for row in rows:
         success = publish_text_only(row['text'])
         if success:
-            execute_query('UPDATE posts SET reposted = 1 WHERE session_id = ?', (row['session_id'],))
+            execute_query("UPDATE posts SET reposted = 1 WHERE session_id = ?", (row['session_id'],))
             print(f"[DEBUG] Повторно опубликован пост {row['session_id']}")
         else:
             print(f"[ERROR] Ошибка репоста {row['session_id']}")
@@ -612,7 +604,7 @@ def check_and_repost():
 def digest_job():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
-        'SELECT text, rating, message_id, views, reactions FROM posts WHERE status = "published" AND published_at >= ? ORDER BY rating DESC LIMIT 5',
+        "SELECT text, rating, message_id, views, reactions FROM posts WHERE status = 'published' AND published_at >= ? ORDER BY rating DESC LIMIT 5",
         (week_ago,), fetch=True
     )
     if not rows:
