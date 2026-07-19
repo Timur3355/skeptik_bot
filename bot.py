@@ -139,12 +139,12 @@ def init_db():
                 approved_at TIMESTAMP,
                 scheduled_publish_time TIMESTAMP,
                 published_at TIMESTAMP,
-                edit_pending BOOLEAN DEFAULT FALSE,
-                rating INTEGER DEFAULT 0
+                edit_pending BOOLEAN DEFAULT FALSE
             )
         ''')
-        # Добавляем недостающие колонки
+        # Добавляем все недостающие колонки, включая rating
         columns_to_add = {
+            'rating': 'INTEGER DEFAULT 0',
             'reposted': 'BOOLEAN DEFAULT FALSE',
             'message_id': 'BIGINT',
             'views': 'INTEGER DEFAULT 0',
