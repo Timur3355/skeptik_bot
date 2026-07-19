@@ -110,7 +110,7 @@ def get_topic_by_analytics():
     print(f"[DEBUG] Лучшая тема по аналитике: {best_topic} (score: {topic_stats[best_topic]:.1f})")
     return best_topic
 
-# ======================== БАЗА ДАННЫХ (исправленная init_db) =========================
+# ======================== БАЗА ДАННЫХ =========================
 if DATABASE_URL:
     import psycopg2
     from psycopg2.extras import RealDictCursor
@@ -291,7 +291,7 @@ def clean_text(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
-def split_text(text, max_len=3000):
+def split_text(text, max_len=4000):  # увеличено до 4000
     if len(text) <= max_len:
         return [text]
     parts = []
@@ -309,7 +309,7 @@ def split_text(text, max_len=3000):
         parts.append(text)
     return parts
 
-# ======================== ГЕНЕРАЦИЯ ПОСТА =========================
+# ======================== ГЕНЕРАЦИЯ ПОСТА (с увеличенными токенами) =========================
 def generate_post():
     topic = get_topic_by_analytics()
     print(f"[DEBUG] Выбрана тема: {topic}")
@@ -323,13 +323,14 @@ def generate_post():
                 "content": (
                     "Ты — автор канала «Скептик с EBITDA».\n"
                     "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
-                    "НЕ выводи <think>, рассуждения — только пост.\n"
+                    "НЕ выводи <think>, рассуждения — только готовый пост.\n"
                     "Пост должен быть содержательным, 4–5 абзацев, примерно 600–800 символов.\n"
                     "Используй эмодзи в начале абзацев, НЕ используй HTML.\n"
                     "В конце — Action Item с ✅.\n"
                     "Указывай период и источник (например, Q3 2023).\n"
                     "В конце поста, после Action Item, добавь ссылку на источник.\n"
                     "В конце поста добавь 3–5 хештегов, начинающихся с #.\n"
+                    "Обязательно завершай пост законченным предложением. Не обрывай мысль на полуслове.\n"
                     "После текста === и описание картинки (англ., 3–4 слова)."
                 )
             },
@@ -339,7 +340,7 @@ def generate_post():
             }
         ],
         "temperature": 0.85,
-        "max_tokens": 250
+        "max_tokens": 400  # увеличено с 250
     }
 
     for attempt in range(3):
@@ -473,7 +474,7 @@ def publish_text_only(text):
 def send_for_approval_no_image(post_text, topic):
     session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
     save_post(session_id, post_text, "", "", topic)
-    full_parts = split_text(post_text, max_len=3000)
+    full_parts = split_text(post_text, max_len=4000)
     print(f"[DEBUG] Без картинки, разбито на {len(full_parts)} частей")
     for i, part in enumerate(full_parts, 1):
         text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -571,7 +572,7 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
                 print(f"[ERROR] Ошибка отправки фото: {resp.text}")
                 return False
 
-        full_parts = split_text(post_text, max_len=3000)
+        full_parts = split_text(post_text, max_len=4000)
         print(f"[DEBUG] Полный текст разбит на {len(full_parts)} частей")
         for i, part in enumerate(full_parts, 1):
             text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
