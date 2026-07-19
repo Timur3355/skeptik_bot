@@ -142,14 +142,12 @@ def init_db():
                 edit_pending BOOLEAN DEFAULT FALSE
             )
         ''')
-        # Добавляем колонки через ALTER TABLE с проверкой существования
         cur.execute('ALTER TABLE posts ADD COLUMN IF NOT EXISTS rating INTEGER DEFAULT 0')
         cur.execute('ALTER TABLE posts ADD COLUMN IF NOT EXISTS reposted BOOLEAN DEFAULT FALSE')
         cur.execute('ALTER TABLE posts ADD COLUMN IF NOT EXISTS message_id BIGINT')
         cur.execute('ALTER TABLE posts ADD COLUMN IF NOT EXISTS views INTEGER DEFAULT 0')
         cur.execute('ALTER TABLE posts ADD COLUMN IF NOT EXISTS reactions INTEGER DEFAULT 0')
         cur.execute('ALTER TABLE posts ADD COLUMN IF NOT EXISTS topic TEXT')
-        # Индексы
         cur.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON posts(session_id)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_status ON posts(status)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_scheduled_publish ON posts(scheduled_publish_time)')
@@ -291,7 +289,7 @@ def clean_text(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
-def split_text(text, max_len=4000):  # увеличено до 4000
+def split_text(text, max_len=4000):
     if len(text) <= max_len:
         return [text]
     parts = []
@@ -309,7 +307,7 @@ def split_text(text, max_len=4000):  # увеличено до 4000
         parts.append(text)
     return parts
 
-# ======================== ГЕНЕРАЦИЯ ПОСТА (с увеличенными токенами) =========================
+# ======================== ГЕНЕРАЦИЯ ПОСТА (max_tokens=600) =========================
 def generate_post():
     topic = get_topic_by_analytics()
     print(f"[DEBUG] Выбрана тема: {topic}")
@@ -340,7 +338,7 @@ def generate_post():
             }
         ],
         "temperature": 0.85,
-        "max_tokens": 400  # увеличено с 250
+        "max_tokens": 600  # увеличено для полноты
     }
 
     for attempt in range(3):
