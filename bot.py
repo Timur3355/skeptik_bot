@@ -64,7 +64,7 @@ API_DEFAULT_MODEL = config["default_model"]
 if not MODEL_NAME:
     MODEL_NAME = API_DEFAULT_MODEL
 
-# ======================== RSS-ФУНКЦИЯ (запасной вариант) =========================
+# ======================== RSS-ФУНКЦИЯ =========================
 def get_topic_from_news():
     rss_urls = [
         "https://www.rbc.ru/rss/",
@@ -87,7 +87,6 @@ def get_topic_from_news():
 
 # ======================== ФУНКЦИЯ АНАЛИТИКИ ТЕМ =========================
 def get_topic_by_analytics():
-    """Анализирует посты за неделю, выбирает тему с наибольшим рейтингом."""
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
         'SELECT topic, rating, views, reactions FROM posts WHERE status = "published" AND published_at >= ? AND topic IS NOT NULL AND topic != ""',
@@ -97,14 +96,12 @@ def get_topic_by_analytics():
         print("[DEBUG] Нет данных для аналитики, используем RSS")
         return get_topic_from_news()
 
-    # Собираем статистику по темам
     topic_stats = {}
     for row in rows:
         topic = row['topic']
         rating = row['rating'] or 0
         views = row['views'] or 0
         reactions = row['reactions'] or 0
-        # Взвешенный балл: рейтинг + 0.1*просмотры + 0.5*реакции
         score = rating + views * 0.1 + reactions * 0.5
         if topic not in topic_stats:
             topic_stats[topic] = 0
@@ -113,12 +110,11 @@ def get_topic_by_analytics():
     if not topic_stats:
         return get_topic_from_news()
 
-    # Сортируем по убыванию балла и берём первую
     best_topic = max(topic_stats, key=topic_stats.get)
     print(f"[DEBUG] Лучшая тема по аналитике: {best_topic} (score: {topic_stats[best_topic]:.1f})")
     return best_topic
 
-# ======================== БАЗА ДАННЫХ (с колонкой topic) =========================
+# ======================== БАЗА ДАННЫХ =========================
 if DATABASE_URL:
     import psycopg2
     from psycopg2.extras import RealDictCursor
@@ -302,9 +298,8 @@ def split_text(text, max_len=3000):
         parts.append(text)
     return parts
 
-# ======================== ГЕНЕРАЦИЯ ПОСТА (с умным выбором темы) =========================
+# ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
-    # Сначала пытаемся выбрать тему по аналитике
     topic = get_topic_by_analytics()
     print(f"[DEBUG] Выбрана тема (аналитика): {topic}")
 
@@ -358,7 +353,9 @@ def generate_post():
             if len(image_prompt) < 10:
                 first_sentence = post_text.split('.')[0] if '.' in post_text else post_text[:50]
                 image_prompt = f"{first_sentence}, business finance illustration, sarcastic, modern"
-            # Возвращаем текст, промпт и тему (для сохранения в БД)
+            # Ограничиваем длину промпта для картинки, чтобы избежать ошибок Pollinations
+            if len(image_prompt) > 200:
+                image_prompt = image_prompt[:200] + "..."
             return post_text, image_prompt, topic
         except requests.exceptions.Timeout:
             print(f"[WARN] Попытка {attempt+1} таймаут")
@@ -392,46 +389,56 @@ def generate_image(prompt):
         print(f"[ERROR] Pollinations error: {e}")
         return None
 
-# ======================== ПУБЛИКАЦИЯ БЕЗ КАРТИНКИ =========================
-def publish_text_only(text):
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
-        resp = requests.post(url, json=data, timeout=30)
-        if resp.status_code == 200:
-            print("[DEBUG] Пост без картинки опубликован")
-            return True
-        else:
-            print(f"[ERROR] Ошибка публикации без картинки: {resp.text}")
-            return False
-    except Exception as e:
-        print(f"[ERROR] Ошибка: {e}")
-        return False
+# ======================== ПУБЛИКАЦИЯ БЕЗ КАРТИНКИ (исправленная) =========================
+def send_for_approval_no_image(post_text, topic):
+    # Генерируем session_id, сохраняем пост в БД (без картинки)
+    session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
+    save_post(session_id, post_text, "", "", topic)  # image_path и image_prompt пустые
 
-def send_for_approval_no_image(post_text):
-    caption = f"📝 Новый пост на проверку (без картинки):\n\n{post_text}"
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        data = {
+    # Разбиваем текст на части и отправляем с кнопками
+    full_parts = split_text(post_text, max_len=3000)
+    print(f"[DEBUG] Полный текст без картинки разбит на {len(full_parts)} частей")
+    for i, part in enumerate(full_parts, 1):
+        text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        text_data = {
             "chat_id": ADMIN_CHAT_ID,
-            "text": caption,
+            "text": f"📝 Новый пост на проверку (без картинки, часть {i}/{len(full_parts)}):\n\n{part}",
             "reply_markup": json.dumps({
                 "inline_keyboard": [
                     [
-                        {"text": "✅ Одобрить (без фото)", "callback_data": f"approve_noimg_{int(time.time())}"},
-                        {"text": "🔄 Перегенерировать", "callback_data": f"regenerate_{int(time.time())}"},
-                        {"text": "❌ Отклонить", "callback_data": f"reject_{int(time.time())}"}
+                        {"text": "✅ Одобрить", "callback_data": f"approve_{session_id}"},
+                        {"text": "🔄 Перегенерировать", "callback_data": f"regenerate_{session_id}"},
+                        {"text": "✏️ Редактировать", "callback_data": f"edit_{session_id}"},
+                        {"text": "❌ Отклонить", "callback_data": f"reject_{session_id}"}
                     ]
                 ]
             })
         }
-        resp = requests.post(url, json=data, timeout=30)
-        if resp.status_code != 200:
-            print(f"[ERROR] Ошибка модерации без фото: {resp.text}")
+        text_resp = requests.post(text_url, json=text_data, timeout=30)
+        if text_resp.status_code != 200:
+            print(f"[ERROR] Ошибка отправки части {i}: {text_resp.text}")
+            return False
+    return True
+
+def publish_text_only(text):
+    # Для авто-публикации без картинки (без модерации)
+    try:
+        # разбиваем на части по 3000, чтобы не обрезалось
+        parts = split_text(text, max_len=3000)
+        for i, part in enumerate(parts, 1):
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            data = {"chat_id": TELEGRAM_CHAT_ID, "text": f"📎 Пост (часть {i}/{len(parts)}):\n\n{part}"}
+            resp = requests.post(url, json=data, timeout=30)
+            if resp.status_code != 200:
+                print(f"[ERROR] Ошибка публикации без картинки: {resp.text}")
+                return False
+        print("[DEBUG] Пост без картинки опубликован")
+        return True
     except Exception as e:
         print(f"[ERROR] Ошибка: {e}")
+        return False
 
-# ======================== ПУБЛИКАЦИЯ В КАНАЛ С РАЗБИВКОЙ И СОХРАНЕНИЕМ СТАТИСТИКИ =========================
+# ======================== ПУБЛИКАЦИЯ С КАРТИНКОЙ =========================
 def publish_to_telegram(text, image_path, session_id=None):
     try:
         if not os.path.exists(image_path):
@@ -479,7 +486,7 @@ def publish_to_telegram(text, image_path, session_id=None):
         traceback.print_exc()
         return False
 
-# ======================== ОТПРАВКА НА МОДЕРАЦИЮ =========================
+# ======================== ОТПРАВКА НА МОДЕРАЦИЮ (с картинкой) =========================
 def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
     save_post(session_id, post_text, image_path, image_prompt, topic)
 
@@ -545,7 +552,7 @@ def send_message(chat_id, text):
     except Exception as e:
         print(f"[ERROR] Ошибка отправки сообщения: {e}")
 
-# ======================== АВТОПОВТОР УДАЧНЫХ ПОСТОВ =========================
+# ======================== АВТОПОВТОР =========================
 def check_and_repost():
     cutoff = (datetime.now() - timedelta(days=30)).isoformat()
     rows = execute_query(
@@ -560,7 +567,7 @@ def check_and_repost():
         else:
             print(f"[ERROR] Ошибка репоста {row['session_id']}")
 
-# ======================== ЕЖЕНЕДЕЛЬНЫЙ ДАЙДЖЕСТ СО СТАТИСТИКОЙ =========================
+# ======================== ДАЙДЖЕСТ =========================
 def digest_job():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
@@ -576,7 +583,6 @@ def digest_job():
         short_text = row['text'][:150] + "..." if len(row['text']) > 150 else row['text']
         views = row['views'] or 0
         reactions = row['reactions'] or 0
-        # Если message_id есть, но статистика не сохранена – попробуем получить
         if row['message_id'] and (views == 0 and reactions == 0):
             try:
                 url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMessageStatistics"
@@ -589,12 +595,10 @@ def digest_job():
                         views = stats.get('views', 0)
                         reactions_list = stats.get('reactions', [])
                         reactions = sum(r.get('count', 0) for r in reactions_list)
-                        # Сохраняем в БД
                         execute_query('UPDATE posts SET views = ?, reactions = ? WHERE message_id = ?', (views, reactions, row['message_id']))
             except Exception as e:
                 print(f"[WARN] Не удалось получить статистику для {row['message_id']}: {e}")
         digest += f"{i}. {short_text}\n   👁 {views} просмотров, ❤️ {reactions} реакций\n\n"
-    # Отправляем в канал
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": digest, "parse_mode": "Markdown"}
     resp = requests.post(url, json=data, timeout=30)
@@ -622,10 +626,6 @@ def process_callback(callback_data, chat_id, message_id):
         answer_callback(chat_id, message_id, "Спасибо за оценку! 👎")
         return
 
-    if action == "approve_noimg":
-        send_message(chat_id, "ℹ️ Функция одобрения без картинки пока в разработке. Используйте 'Перегенерировать' или 'Отклонить'.")
-        return
-
     post_data = get_post(session_id)
     if not post_data:
         answer_callback(chat_id, message_id, "🔄 Черновик устарел, генерирую новый...")
@@ -633,7 +633,7 @@ def process_callback(callback_data, chat_id, message_id):
             new_text, new_prompt, new_topic = generate_post()
             new_img = generate_image(new_prompt)
             if not new_img:
-                send_for_approval_no_image(new_text)
+                send_for_approval_no_image(new_text, new_topic)
                 answer_callback(chat_id, message_id, "✅ Новый пост отправлен (без картинки)")
                 return
             new_sid = f"{int(time.time())}_{random.randint(1000,9999)}"
@@ -656,7 +656,7 @@ def process_callback(callback_data, chat_id, message_id):
             new_text, new_prompt, new_topic = generate_post()
             new_img = generate_image(new_prompt)
             if not new_img:
-                send_for_approval_no_image(new_text)
+                send_for_approval_no_image(new_text, new_topic)
                 delete_post(session_id)
                 answer_callback(chat_id, message_id, "🔄 Новый пост отправлен (без картинки)")
                 return
@@ -750,7 +750,7 @@ def publish_scheduled_posts():
             else:
                 print(f"[{datetime.now()}] ❌ Ошибка публикации {p['session_id']}")
 
-# ======================== ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ (базовый) =========================
+# ======================== ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ =========================
 def weekly_report():
     stats = get_weekly_stats()
     if stats:
@@ -772,7 +772,7 @@ def job(auto_publish=False):
                 publish_text_only(post_text)
                 print(f"[{datetime.now()}] ✅ Пост без картинки опубликован (авто)")
             else:
-                send_for_approval_no_image(post_text)
+                send_for_approval_no_image(post_text, topic)
             return
 
         if auto_publish:
