@@ -200,35 +200,48 @@ def init_db():
 init_db()
 
 def execute_query(query, params=None, fetch=False, fetchone=False):
+    # Логируем запрос и параметры для отладки
+    print(f"[SQL] Query: {query}")
+    print(f"[SQL] Params: {params}")
     if db_type == 'postgres':
         query = query.replace('?', '%s')
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=RealDictCursor if fetch or fetchone else None)
-        cur.execute(query, params)
-        if fetch:
-            result = cur.fetchall()
-        elif fetchone:
-            result = cur.fetchone()
-        else:
-            result = None
-        conn.commit()
-        cur.close()
-        conn.close()
+        try:
+            cur.execute(query, params)
+            if fetch:
+                result = cur.fetchall()
+            elif fetchone:
+                result = cur.fetchone()
+            else:
+                result = None
+        except Exception as e:
+            print(f"[SQL ERROR] {e}")
+            raise
+        finally:
+            conn.commit()
+            cur.close()
+            conn.close()
         return result
     else:
         with closing(sqlite3.connect(DB_PATH)) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
-            cur.execute(query, params)
-            if fetch:
-                result = [dict(row) for row in cur.fetchall()]
-            elif fetchone:
-                row = cur.fetchone()
-                result = dict(row) if row else None
-            else:
-                result = None
-            conn.commit()
-            return result
+            try:
+                cur.execute(query, params)
+                if fetch:
+                    result = [dict(row) for row in cur.fetchall()]
+                elif fetchone:
+                    row = cur.fetchone()
+                    result = dict(row) if row else None
+                else:
+                    result = None
+            except Exception as e:
+                print(f"[SQL ERROR] {e}")
+                raise
+            finally:
+                conn.commit()
+                return result
 
 def save_post(session_id, text, image_path, image_prompt, topic):
     if db_type == 'postgres':
