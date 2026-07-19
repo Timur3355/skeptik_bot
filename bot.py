@@ -589,13 +589,13 @@ def send_message(chat_id, text):
 def check_and_repost():
     cutoff = (datetime.now() - timedelta(days=30)).isoformat()
     rows = execute_query(
-        "SELECT session_id, text FROM posts WHERE status = 'published' AND reposted = 0 AND rating >= 3 AND published_at <= ?",
+        "SELECT session_id, text FROM posts WHERE status = 'published' AND reposted = FALSE AND rating >= 3 AND published_at <= ?",
         (cutoff,), fetch=True
     )
     for row in rows:
         success = publish_text_only(row['text'])
         if success:
-            execute_query("UPDATE posts SET reposted = 1 WHERE session_id = ?", (row['session_id'],))
+            execute_query("UPDATE posts SET reposted = TRUE WHERE session_id = ?", (row['session_id'],))
             print(f"[DEBUG] Повторно опубликован пост {row['session_id']}")
         else:
             print(f"[ERROR] Ошибка репоста {row['session_id']}")
