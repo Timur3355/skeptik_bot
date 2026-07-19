@@ -239,7 +239,7 @@ def create_fallback_image():
             font = ImageFont.load_default()
         draw.text((100, 380), "Изображение временно недоступно", fill='white', font=font)
         img.save("fallback.jpg")
-    except Exception as e:
+    except Exception:
         open("fallback.jpg", "a").close()
 
 def get_topic_from_news():
@@ -690,10 +690,10 @@ class HealthHandler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(f"✅ Успешно (модерация)!\n\n{out}".encode())
-            except:
+            except Exception as e:
                 self.send_response(500)
                 self.end_headers()
-                self.wfile.write(b"❌ Ошибка")
+                self.wfile.write(f"❌ Ошибка: {str(e)}".encode())
             finally:
                 sys.stdout = old
         elif self.path == '/test_publish':
@@ -705,10 +705,10 @@ class HealthHandler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(f"✅ Успешно (авто)!\n\n{out}".encode())
-            except:
+            except Exception as e:
                 self.send_response(500)
                 self.end_headers()
-                self.wfile.write(b"❌ Ошибка")
+                self.wfile.write(f"❌ Ошибка: {str(e)}".encode())
             finally:
                 sys.stdout = old
         else:
