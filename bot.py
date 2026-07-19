@@ -281,6 +281,7 @@ def clean_text(text):
     return text.strip()
 
 def split_text(text, max_len=3000):
+    """Разбивает текст на части не длиннее max_len, сохраняя целостность предложений."""
     if len(text) <= max_len:
         return [text]
     parts = []
@@ -353,7 +354,6 @@ def generate_post():
             if len(image_prompt) < 10:
                 first_sentence = post_text.split('.')[0] if '.' in post_text else post_text[:50]
                 image_prompt = f"{first_sentence}, business finance illustration, sarcastic, modern"
-            # Ограничиваем длину промпта для картинки, чтобы избежать ошибок Pollinations
             if len(image_prompt) > 200:
                 image_prompt = image_prompt[:200] + "..."
             return post_text, image_prompt, topic
@@ -367,38 +367,41 @@ def generate_post():
             time.sleep(3)
     raise Exception("Не удалось получить ответ")
 
-# ======================== ГЕНЕРАЦИЯ КАРТИНКИ =========================
-def generate_image(prompt):
-    try:
-        unique = f" {random.randint(1,100000)}"
-        full = prompt + unique
-        encoded = urllib.parse.quote(full)
-        seed = random.randint(1,999999)
-        ts = int(time.time())
-        url = f"https://image.pollinations.ai/prompt/{encoded}?width=1200&height=800&seed={seed}&t={ts}"
-        print(f"[DEBUG] Pollinations URL: {url}")
-        resp = requests.get(url, timeout=60)
-        if resp.status_code == 200:
-            with open("temp_image.jpg", "wb") as f:
-                f.write(resp.content)
-            return "temp_image.jpg"
-        else:
-            print(f"[ERROR] Pollinations status {resp.status_code}")
-            return None
-    except Exception as e:
-        print(f"[ERROR] Pollinations error: {e}")
-        return None
+# ======================== ГЕНЕРАЦИЯ КАРТИНКИ (С ПОВТОРНЫМИ ПОПЫТКАМИ) =========================
+def generate_image(prompt, retries=3):
+    for attempt in range(retries):
+        try:
+            unique = f" {random.randint(1,100000)}"
+            full = prompt + unique
+            encoded = urllib.parse.quote(full)
+            seed = random.randint(1,999999)
+            ts = int(time.time())
+            url = f"https://image.pollinations.ai/prompt/{encoded}?width=1200&height=800&seed={seed}&t={ts}"
+            print(f"[DEBUG] Pollinations URL: {url}")
+            resp = requests.get(url, timeout=60)
+            if resp.status_code == 200:
+                with open("temp_image.jpg", "wb") as f:
+                    f.write(resp.content)
+                return "temp_image.jpg"
+            else:
+                print(f"[ERROR] Pollinations status {resp.status_code}, попытка {attempt+1}/{retries}")
+                time.sleep(2 ** attempt)  # задержка: 1с, 2с, 4с
+        except Exception as e:
+            print(f"[ERROR] Pollinations error: {e}, попытка {attempt+1}/{retries}")
+            time.sleep(2 ** attempt)
+    return None
 
-# ======================== ПУБЛИКАЦИЯ БЕЗ КАРТИНКИ (исправленная) =========================
+# ======================== ПУБЛИКАЦИЯ БЕЗ КАРТИНКИ (с принудительной разбивкой) =========================
 def send_for_approval_no_image(post_text, topic):
     # Генерируем session_id, сохраняем пост в БД (без картинки)
     session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
-    save_post(session_id, post_text, "", "", topic)  # image_path и image_prompt пустые
+    save_post(session_id, post_text, "", "", topic)
 
-    # Разбиваем текст на части и отправляем с кнопками
+    # Принудительная разбивка текста на части по 3000 символов
     full_parts = split_text(post_text, max_len=3000)
     print(f"[DEBUG] Полный текст без картинки разбит на {len(full_parts)} частей")
     for i, part in enumerate(full_parts, 1):
+        print(f"[DEBUG] Часть {i}: длина {len(part)} символов")
         text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         text_data = {
             "chat_id": ADMIN_CHAT_ID,
@@ -423,7 +426,6 @@ def send_for_approval_no_image(post_text, topic):
 def publish_text_only(text):
     # Для авто-публикации без картинки (без модерации)
     try:
-        # разбиваем на части по 3000, чтобы не обрезалось
         parts = split_text(text, max_len=3000)
         for i, part in enumerate(parts, 1):
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -765,7 +767,7 @@ def job(auto_publish=False):
     print(f"[{datetime.now()}] Генерация поста...")
     try:
         post_text, image_prompt, topic = generate_post()
-        image_path = generate_image(image_prompt)
+        image_path = generate_image(image_prompt)  # теперь с повторными попытками
         if not image_path:
             print("[WARN] Картинка не сгенерирована, публикую только текст")
             if auto_publish:
