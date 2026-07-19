@@ -3,3 +3,4 @@ schedule
 pytz
 feedparser
 psycopg2-binary
+Pillow

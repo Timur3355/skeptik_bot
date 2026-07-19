@@ -239,8 +239,11 @@ def create_fallback_image():
             font = ImageFont.load_default()
         draw.text((100, 380), "Изображение временно недоступно", fill='white', font=font)
         img.save("fallback.jpg")
-    except Exception:
-        open("fallback.jpg", "a").close()
+        print("[DEBUG] Создана заглушка fallback.jpg")
+        return True
+    except Exception as e:
+        print(f"[WARN] Не удалось создать заглушку через Pillow: {e}")
+        return False
 
 def get_topic_from_news():
     rss_urls = ["https://www.rbc.ru/rss/", "https://www.kommersant.ru/RSS/news.xml", "https://lenta.ru/rss/news"]
@@ -335,7 +338,20 @@ def generate_image(prompt):
             if s.get("local"):
                 if os.path.exists(s["path"]):
                     return s["path"]
-                create_fallback_image()
+                # Пытаемся создать через Pillow
+                if create_fallback_image():
+                    return "fallback.jpg"
+                # Если не вышло – скачиваем заглушку из интернета
+                try:
+                    r = requests.get("https://via.placeholder.com/1200x800/000000/FFFFFF?text=Изображение+недоступно", timeout=30)
+                    if r.status_code == 200:
+                        with open("fallback.jpg", "wb") as f:
+                            f.write(r.content)
+                        return "fallback.jpg"
+                except:
+                    pass
+                # Крайний случай: создаём пустой файл (не картинка, но лучше чем ничего)
+                open("fallback.jpg", "a").close()
                 return "fallback.jpg"
             print(f"[DEBUG] Пробуем {s['name']}...")
             url = s["url"](prompt) if callable(s["url"]) else s["url"]
@@ -358,8 +374,20 @@ def generate_image(prompt):
         except Exception as e:
             print(f"[WARN] {s['name']}: {e}")
         time.sleep(2)
-    create_fallback_image()
-    return "fallback.jpg"
+    # Если всё провалилось, возвращаем fallback (он должен быть создан)
+    if os.path.exists("fallback.jpg"):
+        return "fallback.jpg"
+    else:
+        # Скачиваем прямо сейчас
+        try:
+            r = requests.get("https://via.placeholder.com/1200x800/000000/FFFFFF?text=Изображение+недоступно", timeout=30)
+            if r.status_code == 200:
+                with open("fallback.jpg", "wb") as f:
+                    f.write(r.content)
+                return "fallback.jpg"
+        except:
+            pass
+        return None
 
 # ====== ПУБЛИКАЦИЯ ======
 def publish_text_only(text):
