@@ -22,10 +22,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
-
-# Токен для Hugging Face (обязательно)
 HF_API_TOKEN = os.getenv("HF_API_TOKEN")
-# Cloudflare (опционально)
 CLOUDFLARE_API_URL = os.getenv("CLOUDFLARE_API_URL")
 CLOUDFLARE_API_KEY = os.getenv("CLOUDFLARE_API_KEY")
 
@@ -113,7 +110,7 @@ def get_topic_by_analytics():
     print(f"[DEBUG] Лучшая тема по аналитике: {best_topic} (score: {topic_stats[best_topic]:.1f})")
     return best_topic
 
-# ======================== БАЗА ДАННЫХ =========================
+# ======================== БАЗА ДАННЫХ (исправленная) =========================
 if DATABASE_URL:
     import psycopg2
     from psycopg2.extras import RealDictCursor
@@ -130,6 +127,7 @@ def init_db():
     if db_type == 'postgres':
         conn = get_db_connection()
         cur = conn.cursor()
+        # Создаём таблицу, если её нет
         cur.execute('''
             CREATE TABLE IF NOT EXISTS posts (
                 id SERIAL PRIMARY KEY,
@@ -137,7 +135,6 @@ def init_db():
                 text TEXT,
                 image_path TEXT,
                 image_prompt TEXT,
-                topic TEXT,
                 status TEXT DEFAULT 'pending',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 approved_at TIMESTAMP,
@@ -151,6 +148,17 @@ def init_db():
                 reactions INTEGER DEFAULT 0
             )
         ''')
+        # Добавляем колонку topic, если её нет
+        cur.execute("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                               WHERE table_name='posts' AND column_name='topic') THEN
+                    ALTER TABLE posts ADD COLUMN topic TEXT;
+                END IF;
+            END $$;
+        """)
+        # Создаём индексы
         cur.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON posts(session_id)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_status ON posts(status)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_scheduled_publish ON posts(scheduled_publish_time)')
@@ -186,6 +194,7 @@ def init_db():
             conn.execute('CREATE INDEX IF NOT EXISTS idx_scheduled_publish ON posts(scheduled_publish_time)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_topic ON posts(topic)')
             conn.commit()
+
 init_db()
 
 def execute_query(query, params=None, fetch=False, fetchone=False):
@@ -442,7 +451,7 @@ def generate_image(prompt):
     print("[ERROR] Все сервисы генерации картинок недоступны")
     return None
 
-# ======================== ПУБЛИКАЦИЯ БЕЗ КАРТИНКИ =========================
+# ======================== ПУБЛИКАЦИЯ БЕЗ КАРТИНКИ (с разбивкой) =========================
 def publish_text_only(text):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"

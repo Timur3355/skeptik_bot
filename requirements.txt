@@ -1,5 +1,5 @@
 requests
 schedule
 pytz
-psycopg2-binary
 feedparser
+psycopg2-binary
