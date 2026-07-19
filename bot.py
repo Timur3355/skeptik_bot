@@ -216,14 +216,13 @@ def clean_text(text):
 def get_topic_by_day():
     return DAY_TOPICS.get(datetime.now().weekday(), DAY_TOPICS[0])
 
-def split_text(text, max_len=3900):
+def split_text(text, max_len=3000):
     """Разбивает текст на части не длиннее max_len, сохраняя целостность предложений."""
     if len(text) <= max_len:
         return [text]
     parts = []
     while len(text) > max_len:
         chunk = text[:max_len]
-        # Ищем последнюю точку, восклицание или вопрос
         last_punct = max(chunk.rfind('.'), chunk.rfind('!'), chunk.rfind('?'))
         if last_punct > 0:
             split_pos = last_punct + 1
@@ -407,7 +406,6 @@ def publish_to_telegram(text, image_path):
 def send_for_approval(post_text, image_path, image_prompt, session_id):
     save_post(session_id, post_text, image_path, image_prompt)
 
-    # Отправляем фото с кратким началом
     first_part = split_text(post_text, max_len=1000)[0]
     caption = f"📝 Новый пост на проверку (начало):\n\n{first_part}..."
     try:
@@ -433,9 +431,11 @@ def send_for_approval(post_text, image_path, image_prompt, session_id):
                 print(f"[ERROR] Ошибка отправки фото: {resp.text}")
                 return False
 
-        # Разбиваем полный текст на части по 3900 символов и отправляем все
-        full_parts = split_text(post_text, max_len=3900)
+        full_parts = split_text(post_text, max_len=3000)
+        print(f"[DEBUG] Полный текст разбит на {len(full_parts)} частей")
         for i, part in enumerate(full_parts, 1):
+            byte_len = len(part.encode('utf-8'))
+            print(f"[DEBUG] Часть {i}: длина в символах {len(part)}, в байтах {byte_len}")
             text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
             text_data = {
                 "chat_id": ADMIN_CHAT_ID,
