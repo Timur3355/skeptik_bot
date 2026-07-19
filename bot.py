@@ -22,6 +22,10 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Токен для Hugging Face (обязательно)
+HF_API_TOKEN = os.getenv("HF_API_TOKEN")
+# Cloudflare (опционально)
 CLOUDFLARE_API_URL = os.getenv("CLOUDFLARE_API_URL")
 CLOUDFLARE_API_KEY = os.getenv("CLOUDFLARE_API_KEY")
 
@@ -361,9 +365,50 @@ def generate_post():
             time.sleep(3)
     raise Exception("Не удалось получить ответ")
 
-# ======================== ГЕНЕРАЦИЯ КАРТИНКИ (С РЕЗЕРВОМ) =========================
-def generate_image(prompt):
-    # 1. Пробуем Pollinations
+# ======================== ГЕНЕРАЦИЯ КАРТИНКИ (тройной резерв) =========================
+def generate_image_huggingface(prompt):
+    if not HF_API_TOKEN:
+        return None
+    API_URL = "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-dev"
+    headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
+    payload = {"inputs": prompt}
+    try:
+        response = requests.post(API_URL, headers=headers, json=payload, timeout=60)
+        if response.status_code == 200:
+            with open("temp_image.jpg", "wb") as f:
+                f.write(response.content)
+            print("[INFO] Картинка сгенерирована через Hugging Face")
+            return "temp_image.jpg"
+        else:
+            print(f"[WARN] Hugging Face вернул {response.status_code}")
+            return None
+    except Exception as e:
+        print(f"[WARN] Ошибка Hugging Face: {e}")
+        return None
+
+def generate_image_cloudflare(prompt):
+    if not CLOUDFLARE_API_URL or not CLOUDFLARE_API_KEY:
+        return None
+    try:
+        headers = {
+            "Authorization": f"Bearer {CLOUDFLARE_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        data = {"prompt": prompt}
+        resp = requests.post(CLOUDFLARE_API_URL, headers=headers, json=data, timeout=60)
+        if resp.status_code == 200:
+            with open("temp_image.jpg", "wb") as f:
+                f.write(resp.content)
+            print("[INFO] Картинка сгенерирована через Cloudflare")
+            return "temp_image.jpg"
+        else:
+            print(f"[WARN] Cloudflare вернул {resp.status_code}")
+            return None
+    except Exception as e:
+        print(f"[WARN] Ошибка Cloudflare: {e}")
+        return None
+
+def generate_image_pollinations(prompt):
     try:
         unique = f" {random.randint(1,100000)}"
         full = prompt + unique
@@ -371,40 +416,30 @@ def generate_image(prompt):
         seed = random.randint(1,999999)
         ts = int(time.time())
         url = f"https://image.pollinations.ai/prompt/{encoded}?width=1200&height=800&seed={seed}&t={ts}"
-        print(f"[DEBUG] Pollinations URL: {url}")
-        resp = requests.get(url, timeout=60)
+        resp = requests.get(url, timeout=30)
         if resp.status_code == 200:
             with open("temp_image.jpg", "wb") as f:
                 f.write(resp.content)
+            print("[INFO] Картинка сгенерирована через Pollinations")
             return "temp_image.jpg"
         else:
             print(f"[WARN] Pollinations вернул {resp.status_code}")
+            return None
     except Exception as e:
-        print(f"[WARN] Pollinations error: {e}")
+        print(f"[WARN] Ошибка Pollinations: {e}")
+        return None
 
-    # 2. Резерв – Cloudflare
-    if CLOUDFLARE_API_URL and CLOUDFLARE_API_KEY:
-        print("[INFO] Пытаемся сгенерировать через Cloudflare...")
-        try:
-            headers = {
-                "Authorization": f"Bearer {CLOUDFLARE_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            data = {"prompt": prompt}
-            resp = requests.post(CLOUDFLARE_API_URL, headers=headers, json=data, timeout=60)
-            if resp.status_code == 200:
-                with open("temp_image.jpg", "wb") as f:
-                    f.write(resp.content)
-                print("[INFO] Изображение успешно сгенерировано через Cloudflare")
-                return "temp_image.jpg"
-            else:
-                print(f"[ERROR] Cloudflare API: {resp.status_code} - {resp.text}")
-        except Exception as e:
-            print(f"[ERROR] Ошибка Cloudflare: {e}")
-    else:
-        print("[WARN] Cloudflare не настроен")
-
-    print("[ERROR] Картинка не сгенерирована ни одним способом")
+def generate_image(prompt):
+    img = generate_image_huggingface(prompt)
+    if img:
+        return img
+    img = generate_image_cloudflare(prompt)
+    if img:
+        return img
+    img = generate_image_pollinations(prompt)
+    if img:
+        return img
+    print("[ERROR] Все сервисы генерации картинок недоступны")
     return None
 
 # ======================== ПУБЛИКАЦИЯ БЕЗ КАРТИНКИ =========================
@@ -450,13 +485,12 @@ def send_for_approval_no_image(post_text, topic):
             return False
     return True
 
-# ======================== ПУБЛИКАЦИЯ В КАНАЛ С РАЗБИВКОЙ =========================
+# ======================== ПУБЛИКАЦИЯ В КАНАЛ =========================
 def publish_to_telegram(text, image_path, session_id=None):
     try:
         if not os.path.exists(image_path):
             print("[ERROR] Файл картинки не найден")
             return False
-
         parts = split_text(text, max_len=1000)
         first_part = parts[0] if parts else ""
         second_part = parts[1] if len(parts) > 1 else ""
@@ -490,7 +524,6 @@ def publish_to_telegram(text, image_path, session_id=None):
             if text_resp.status_code != 200:
                 print(f"[ERROR] Ошибка отправки продолжения: {text_resp.text}")
                 return False
-
         print("[DEBUG] Публикация успешна")
         return True
     except Exception as e:
@@ -501,7 +534,6 @@ def publish_to_telegram(text, image_path, session_id=None):
 # ======================== ОТПРАВКА НА МОДЕРАЦИЮ =========================
 def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
     save_post(session_id, post_text, image_path, image_prompt, topic)
-
     first_part = split_text(post_text, max_len=1000)[0]
     caption = f"📝 Новый пост на проверку (начало):\n\n{first_part}..."
     try:
@@ -539,7 +571,6 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
             if text_resp.status_code != 200:
                 print(f"[ERROR] Ошибка отправки полного текста (часть {i}): {text_resp.text}")
                 return False
-
         return True
     except Exception as e:
         print(f"[ERROR] Ошибка модерации: {e}")
@@ -763,7 +794,7 @@ def publish_scheduled_posts():
             else:
                 print(f"[{datetime.now()}] ❌ Ошибка публикации {p['session_id']}")
 
-# ======================== ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ =========================
+# ======================== ОТЧЁТ =========================
 def weekly_report():
     stats = get_weekly_stats()
     if stats:
