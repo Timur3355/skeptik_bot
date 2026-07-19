@@ -110,7 +110,7 @@ def get_topic_by_analytics():
     print(f"[DEBUG] Лучшая тема по аналитике: {best_topic} (score: {topic_stats[best_topic]:.1f})")
     return best_topic
 
-# ======================== БАЗА ДАННЫХ (с автоматическим добавлением колонок) =========================
+# ======================== БАЗА ДАННЫХ =========================
 if DATABASE_URL:
     import psycopg2
     from psycopg2.extras import RealDictCursor
@@ -200,7 +200,6 @@ def init_db():
 init_db()
 
 def execute_query(query, params=None, fetch=False, fetchone=False):
-    # Логируем запрос и параметры для отладки
     print(f"[SQL] Query: {query}")
     print(f"[SQL] Params: {params}")
     if db_type == 'postgres':
@@ -389,7 +388,7 @@ def generate_post():
             time.sleep(3)
     raise Exception("Не удалось получить ответ")
 
-# ======================== ГЕНЕРАЦИЯ КАРТИНКИ (тройной резерв) =========================
+# ======================== ГЕНЕРАЦИЯ КАРТИНКИ =========================
 def generate_image_huggingface(prompt):
     if not HF_API_TOKEN:
         return None
@@ -466,7 +465,7 @@ def generate_image(prompt):
     print("[ERROR] Все сервисы генерации картинок недоступны")
     return None
 
-# ======================== ПУБЛИКАЦИЯ БЕЗ КАРТИНКИ (с разбивкой) =========================
+# ======================== ПУБЛИКАЦИЯ БЕЗ КАРТИНКИ =========================
 def publish_text_only(text):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -621,13 +620,13 @@ def send_message(chat_id, text):
 def check_and_repost():
     cutoff = (datetime.now() - timedelta(days=30)).isoformat()
     rows = execute_query(
-        'SELECT session_id, text FROM posts WHERE status = \'published\' AND reposted = 0 AND rating >= 3 AND published_at <= ?',
+        'SELECT session_id, text FROM posts WHERE status = \'published\' AND reposted = FALSE AND rating >= 3 AND published_at <= ?',
         (cutoff,), fetch=True
     )
     for row in rows:
         success = publish_text_only(row['text'])
         if success:
-            execute_query('UPDATE posts SET reposted = 1 WHERE session_id = ?', (row['session_id'],))
+            execute_query('UPDATE posts SET reposted = TRUE WHERE session_id = ?', (row['session_id'],))
             print(f"[DEBUG] Повторно опубликован пост {row['session_id']}")
         else:
             print(f"[ERROR] Ошибка репоста {row['session_id']}")
