@@ -22,6 +22,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
+IMAGE_API_URL = os.getenv("IMAGE_API_URL")  # ваш Cloudflare Worker URL
 
 API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
 MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
@@ -280,8 +281,8 @@ def clean_text(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
-def split_text(text, max_len=3000):
-    """Разбивает текст на части не длиннее max_len, сохраняя целостность предложений."""
+def split_text(text, max_len=4096):
+    """Разбивает текст на части не длиннее max_len (максимум Telegram)"""
     if len(text) <= max_len:
         return [text]
     parts = []
@@ -367,9 +368,24 @@ def generate_post():
             time.sleep(3)
     raise Exception("Не удалось получить ответ")
 
-# ======================== ГЕНЕРАЦИЯ КАРТИНКИ (С ПОВТОРНЫМИ ПОПЫТКАМИ) =========================
-def generate_image(prompt, retries=3):
-    for attempt in range(retries):
+# ======================== ГЕНЕРАЦИЯ КАРТИНКИ (с резервом) =========================
+def generate_image(prompt):
+    # 1. Пробуем Cloudflare Worker (если задан IMAGE_API_URL)
+    if IMAGE_API_URL:
+        try:
+            url = f"{IMAGE_API_URL}?prompt={urllib.parse.quote(prompt)}&width=1200&height=800"
+            print(f"[DEBUG] Попытка через Cloudflare Worker: {url}")
+            resp = requests.get(url, timeout=30)
+            if resp.status_code == 200:
+                with open("temp_image.jpg", "wb") as f:
+                    f.write(resp.content)
+                return "temp_image.jpg"
+            else:
+                print(f"[WARN] Worker вернул {resp.status_code}, пробую Pollinations")
+        except Exception as e:
+            print(f"[WARN] Ошибка Worker: {e}, пробую Pollinations")
+    # 2. Запасной – Pollinations с повторными попытками
+    for attempt in range(3):
         try:
             unique = f" {random.randint(1,100000)}"
             full = prompt + unique
@@ -384,21 +400,19 @@ def generate_image(prompt, retries=3):
                     f.write(resp.content)
                 return "temp_image.jpg"
             else:
-                print(f"[ERROR] Pollinations status {resp.status_code}, попытка {attempt+1}/{retries}")
-                time.sleep(2 ** attempt)  # задержка: 1с, 2с, 4с
+                print(f"[ERROR] Pollinations status {resp.status_code}, попытка {attempt+1}/3")
+                time.sleep(2 ** attempt)
         except Exception as e:
-            print(f"[ERROR] Pollinations error: {e}, попытка {attempt+1}/{retries}")
+            print(f"[ERROR] Pollinations error: {e}, попытка {attempt+1}/3")
             time.sleep(2 ** attempt)
     return None
 
-# ======================== ПУБЛИКАЦИЯ БЕЗ КАРТИНКИ (с принудительной разбивкой) =========================
+# ======================== ПУБЛИКАЦИЯ БЕЗ КАРТИНКИ =========================
 def send_for_approval_no_image(post_text, topic):
-    # Генерируем session_id, сохраняем пост в БД (без картинки)
     session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
     save_post(session_id, post_text, "", "", topic)
 
-    # Принудительная разбивка текста на части по 3000 символов
-    full_parts = split_text(post_text, max_len=3000)
+    full_parts = split_text(post_text, max_len=4096)
     print(f"[DEBUG] Полный текст без картинки разбит на {len(full_parts)} частей")
     for i, part in enumerate(full_parts, 1):
         print(f"[DEBUG] Часть {i}: длина {len(part)} символов")
@@ -424,9 +438,8 @@ def send_for_approval_no_image(post_text, topic):
     return True
 
 def publish_text_only(text):
-    # Для авто-публикации без картинки (без модерации)
     try:
-        parts = split_text(text, max_len=3000)
+        parts = split_text(text, max_len=4096)
         for i, part in enumerate(parts, 1):
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
             data = {"chat_id": TELEGRAM_CHAT_ID, "text": f"📎 Пост (часть {i}/{len(parts)}):\n\n{part}"}
@@ -517,7 +530,7 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
                 print(f"[ERROR] Ошибка отправки фото: {resp.text}")
                 return False
 
-        full_parts = split_text(post_text, max_len=3000)
+        full_parts = split_text(post_text, max_len=4096)
         print(f"[DEBUG] Полный текст разбит на {len(full_parts)} частей")
         for i, part in enumerate(full_parts, 1):
             byte_len = len(part.encode('utf-8'))
@@ -767,7 +780,7 @@ def job(auto_publish=False):
     print(f"[{datetime.now()}] Генерация поста...")
     try:
         post_text, image_prompt, topic = generate_post()
-        image_path = generate_image(image_prompt)  # теперь с повторными попытками
+        image_path = generate_image(image_prompt)
         if not image_path:
             print("[WARN] Картинка не сгенерирована, публикую только текст")
             if auto_publish:
