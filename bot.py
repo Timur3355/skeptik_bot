@@ -22,14 +22,14 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
-IMAGE_API_URL = os.getenv("IMAGE_API_URL")  # ваш Cloudflare Worker URL
+CLOUDFLARE_API_URL = os.getenv("CLOUDFLARE_API_URL")
+CLOUDFLARE_API_KEY = os.getenv("CLOUDFLARE_API_KEY")
 
 API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
 MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
 
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
-# ======================== ТЕМЫ ПО ДНЯМ (запасной вариант) =========================
 DAY_TOPICS = {
     0: "логистические провалы Ozon: затраты, сроки доставки, убытки",
     1: "штрафы и возвраты Wildberries: как компания зарабатывает на продавцах",
@@ -65,7 +65,7 @@ API_DEFAULT_MODEL = config["default_model"]
 if not MODEL_NAME:
     MODEL_NAME = API_DEFAULT_MODEL
 
-# ======================== RSS-ФУНКЦИЯ =========================
+# ======================== RSS =========================
 def get_topic_from_news():
     rss_urls = [
         "https://www.rbc.ru/rss/",
@@ -86,7 +86,7 @@ def get_topic_from_news():
         print(f"[WARN] Ошибка RSS: {e}")
         return DAY_TOPICS.get(datetime.now().weekday(), DAY_TOPICS[0])
 
-# ======================== ФУНКЦИЯ АНАЛИТИКИ ТЕМ =========================
+# ======================== АНАЛИТИКА ТЕМ =========================
 def get_topic_by_analytics():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
@@ -96,21 +96,15 @@ def get_topic_by_analytics():
     if not rows:
         print("[DEBUG] Нет данных для аналитики, используем RSS")
         return get_topic_from_news()
-
     topic_stats = {}
     for row in rows:
         topic = row['topic']
-        rating = row['rating'] or 0
-        views = row['views'] or 0
-        reactions = row['reactions'] or 0
-        score = rating + views * 0.1 + reactions * 0.5
+        score = (row['rating'] or 0) + (row['views'] or 0) * 0.1 + (row['reactions'] or 0) * 0.5
         if topic not in topic_stats:
             topic_stats[topic] = 0
         topic_stats[topic] += score
-
     if not topic_stats:
         return get_topic_from_news()
-
     best_topic = max(topic_stats, key=topic_stats.get)
     print(f"[DEBUG] Лучшая тема по аналитике: {best_topic} (score: {topic_stats[best_topic]:.1f})")
     return best_topic
@@ -281,8 +275,7 @@ def clean_text(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
-def split_text(text, max_len=4096):
-    """Разбивает текст на части не длиннее max_len (максимум Telegram)"""
+def split_text(text, max_len=3000):
     if len(text) <= max_len:
         return [text]
     parts = []
@@ -303,7 +296,7 @@ def split_text(text, max_len=4096):
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
     topic = get_topic_by_analytics()
-    print(f"[DEBUG] Выбрана тема (аналитика): {topic}")
+    print(f"[DEBUG] Выбрана тема: {topic}")
 
     headers = API_HEADERS_FUNC(DEEPSEEK_API_KEY)
     payload = {
@@ -319,8 +312,8 @@ def generate_post():
                     "Используй эмодзи в начале абзацев, НЕ используй HTML.\n"
                     "В конце — Action Item с ✅.\n"
                     "Указывай период и источник (например, Q3 2023).\n"
-                    "В конце поста, после Action Item, добавь ссылку на источник: например, 'По данным отчёта компании за Q3 2023' или конкретный URL, если он у тебя есть.\n"
-                    "В конце поста добавь 3–5 хештегов, начинающихся с #, на основе ключевых слов (например, #магнит #ритейл #экспансия).\n"
+                    "В конце поста, после Action Item, добавь ссылку на источник.\n"
+                    "В конце поста добавь 3–5 хештегов, начинающихся с #.\n"
                     "После текста === и описание картинки (англ., 3–4 слова)."
                 )
             },
@@ -368,54 +361,74 @@ def generate_post():
             time.sleep(3)
     raise Exception("Не удалось получить ответ")
 
-# ======================== ГЕНЕРАЦИЯ КАРТИНКИ (с резервом) =========================
+# ======================== ГЕНЕРАЦИЯ КАРТИНКИ (С РЕЗЕРВОМ) =========================
 def generate_image(prompt):
-    # 1. Пробуем Cloudflare Worker (если задан IMAGE_API_URL)
-    if IMAGE_API_URL:
+    # 1. Пробуем Pollinations
+    try:
+        unique = f" {random.randint(1,100000)}"
+        full = prompt + unique
+        encoded = urllib.parse.quote(full)
+        seed = random.randint(1,999999)
+        ts = int(time.time())
+        url = f"https://image.pollinations.ai/prompt/{encoded}?width=1200&height=800&seed={seed}&t={ts}"
+        print(f"[DEBUG] Pollinations URL: {url}")
+        resp = requests.get(url, timeout=60)
+        if resp.status_code == 200:
+            with open("temp_image.jpg", "wb") as f:
+                f.write(resp.content)
+            return "temp_image.jpg"
+        else:
+            print(f"[WARN] Pollinations вернул {resp.status_code}")
+    except Exception as e:
+        print(f"[WARN] Pollinations error: {e}")
+
+    # 2. Резерв – Cloudflare
+    if CLOUDFLARE_API_URL and CLOUDFLARE_API_KEY:
+        print("[INFO] Пытаемся сгенерировать через Cloudflare...")
         try:
-            url = f"{IMAGE_API_URL}?prompt={urllib.parse.quote(prompt)}&width=1200&height=800"
-            print(f"[DEBUG] Попытка через Cloudflare Worker: {url}")
-            resp = requests.get(url, timeout=30)
+            headers = {
+                "Authorization": f"Bearer {CLOUDFLARE_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            data = {"prompt": prompt}
+            resp = requests.post(CLOUDFLARE_API_URL, headers=headers, json=data, timeout=60)
             if resp.status_code == 200:
                 with open("temp_image.jpg", "wb") as f:
                     f.write(resp.content)
+                print("[INFO] Изображение успешно сгенерировано через Cloudflare")
                 return "temp_image.jpg"
             else:
-                print(f"[WARN] Worker вернул {resp.status_code}, пробую Pollinations")
+                print(f"[ERROR] Cloudflare API: {resp.status_code} - {resp.text}")
         except Exception as e:
-            print(f"[WARN] Ошибка Worker: {e}, пробую Pollinations")
-    # 2. Запасной – Pollinations с повторными попытками
-    for attempt in range(3):
-        try:
-            unique = f" {random.randint(1,100000)}"
-            full = prompt + unique
-            encoded = urllib.parse.quote(full)
-            seed = random.randint(1,999999)
-            ts = int(time.time())
-            url = f"https://image.pollinations.ai/prompt/{encoded}?width=1200&height=800&seed={seed}&t={ts}"
-            print(f"[DEBUG] Pollinations URL: {url}")
-            resp = requests.get(url, timeout=60)
-            if resp.status_code == 200:
-                with open("temp_image.jpg", "wb") as f:
-                    f.write(resp.content)
-                return "temp_image.jpg"
-            else:
-                print(f"[ERROR] Pollinations status {resp.status_code}, попытка {attempt+1}/3")
-                time.sleep(2 ** attempt)
-        except Exception as e:
-            print(f"[ERROR] Pollinations error: {e}, попытка {attempt+1}/3")
-            time.sleep(2 ** attempt)
+            print(f"[ERROR] Ошибка Cloudflare: {e}")
+    else:
+        print("[WARN] Cloudflare не настроен")
+
+    print("[ERROR] Картинка не сгенерирована ни одним способом")
     return None
 
 # ======================== ПУБЛИКАЦИЯ БЕЗ КАРТИНКИ =========================
+def publish_text_only(text):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
+        resp = requests.post(url, json=data, timeout=30)
+        if resp.status_code == 200:
+            print("[DEBUG] Пост без картинки опубликован")
+            return True
+        else:
+            print(f"[ERROR] Ошибка публикации без картинки: {resp.text}")
+            return False
+    except Exception as e:
+        print(f"[ERROR] Ошибка: {e}")
+        return False
+
 def send_for_approval_no_image(post_text, topic):
     session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
     save_post(session_id, post_text, "", "", topic)
-
-    full_parts = split_text(post_text, max_len=4096)
-    print(f"[DEBUG] Полный текст без картинки разбит на {len(full_parts)} частей")
+    full_parts = split_text(post_text, max_len=3000)
+    print(f"[DEBUG] Без картинки, разбито на {len(full_parts)} частей")
     for i, part in enumerate(full_parts, 1):
-        print(f"[DEBUG] Часть {i}: длина {len(part)} символов")
         text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         text_data = {
             "chat_id": ADMIN_CHAT_ID,
@@ -431,29 +444,13 @@ def send_for_approval_no_image(post_text, topic):
                 ]
             })
         }
-        text_resp = requests.post(text_url, json=text_data, timeout=30)
-        if text_resp.status_code != 200:
-            print(f"[ERROR] Ошибка отправки части {i}: {text_resp.text}")
+        resp = requests.post(text_url, json=text_data, timeout=30)
+        if resp.status_code != 200:
+            print(f"[ERROR] Ошибка отправки части {i}: {resp.text}")
             return False
     return True
 
-def publish_text_only(text):
-    try:
-        parts = split_text(text, max_len=4096)
-        for i, part in enumerate(parts, 1):
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-            data = {"chat_id": TELEGRAM_CHAT_ID, "text": f"📎 Пост (часть {i}/{len(parts)}):\n\n{part}"}
-            resp = requests.post(url, json=data, timeout=30)
-            if resp.status_code != 200:
-                print(f"[ERROR] Ошибка публикации без картинки: {resp.text}")
-                return False
-        print("[DEBUG] Пост без картинки опубликован")
-        return True
-    except Exception as e:
-        print(f"[ERROR] Ошибка: {e}")
-        return False
-
-# ======================== ПУБЛИКАЦИЯ С КАРТИНКОЙ =========================
+# ======================== ПУБЛИКАЦИЯ В КАНАЛ С РАЗБИВКОЙ =========================
 def publish_to_telegram(text, image_path, session_id=None):
     try:
         if not os.path.exists(image_path):
@@ -501,7 +498,7 @@ def publish_to_telegram(text, image_path, session_id=None):
         traceback.print_exc()
         return False
 
-# ======================== ОТПРАВКА НА МОДЕРАЦИЮ (с картинкой) =========================
+# ======================== ОТПРАВКА НА МОДЕРАЦИЮ =========================
 def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
     save_post(session_id, post_text, image_path, image_prompt, topic)
 
@@ -530,11 +527,9 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
                 print(f"[ERROR] Ошибка отправки фото: {resp.text}")
                 return False
 
-        full_parts = split_text(post_text, max_len=4096)
+        full_parts = split_text(post_text, max_len=3000)
         print(f"[DEBUG] Полный текст разбит на {len(full_parts)} частей")
         for i, part in enumerate(full_parts, 1):
-            byte_len = len(part.encode('utf-8'))
-            print(f"[DEBUG] Часть {i}: длина в символах {len(part)}, в байтах {byte_len}")
             text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
             text_data = {
                 "chat_id": ADMIN_CHAT_ID,
@@ -592,7 +587,6 @@ def digest_job():
     if not rows:
         send_message(ADMIN_CHAT_ID, "📊 За неделю нет опубликованных постов.")
         return
-
     digest = "📅 **Лучшие посты недели:**\n\n"
     for i, row in enumerate(rows, 1):
         short_text = row['text'][:150] + "..." if len(row['text']) > 150 else row['text']
@@ -641,6 +635,10 @@ def process_callback(callback_data, chat_id, message_id):
         answer_callback(chat_id, message_id, "Спасибо за оценку! 👎")
         return
 
+    if action == "approve_noimg":
+        send_message(chat_id, "ℹ️ Функция одобрения без картинки пока в разработке.")
+        return
+
     post_data = get_post(session_id)
     if not post_data:
         answer_callback(chat_id, message_id, "🔄 Черновик устарел, генерирую новый...")
@@ -682,7 +680,7 @@ def process_callback(callback_data, chat_id, message_id):
         except Exception as e:
             answer_callback(chat_id, message_id, f"❌ Ошибка: {str(e)[:100]}")
     elif action == "edit":
-        answer_callback(chat_id, message_id, "✏️ Пришли новый текст поста (без картинки).")
+        answer_callback(chat_id, message_id, "✏️ Пришли новый текст поста.")
         edit_mode[chat_id] = session_id
     elif action == "reject":
         update_post_status(session_id, 'rejected')
