@@ -110,7 +110,7 @@ def get_topic_by_analytics():
     print(f"[DEBUG] Лучшая тема по аналитике: {best_topic} (score: {topic_stats[best_topic]:.1f})")
     return best_topic
 
-# ======================== БАЗА ДАННЫХ =========================
+# ======================== БАЗА ДАННЫХ (исправленная init_db) =========================
 if DATABASE_URL:
     import psycopg2
     from psycopg2.extras import RealDictCursor
@@ -142,25 +142,14 @@ def init_db():
                 edit_pending BOOLEAN DEFAULT FALSE
             )
         ''')
-        # Добавляем все недостающие колонки, включая rating
-        columns_to_add = {
-            'rating': 'INTEGER DEFAULT 0',
-            'reposted': 'BOOLEAN DEFAULT FALSE',
-            'message_id': 'BIGINT',
-            'views': 'INTEGER DEFAULT 0',
-            'reactions': 'INTEGER DEFAULT 0',
-            'topic': 'TEXT'
-        }
-        for col, col_type in columns_to_add.items():
-            cur.execute(f"""
-                DO $$
-                BEGIN
-                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                                   WHERE table_name='posts' AND column_name='{col}') THEN
-                        ALTER TABLE posts ADD COLUMN {col} {col_type};
-                    END IF;
-                END $$;
-            """)
+        # Добавляем колонки через ALTER TABLE с проверкой существования
+        cur.execute('ALTER TABLE posts ADD COLUMN IF NOT EXISTS rating INTEGER DEFAULT 0')
+        cur.execute('ALTER TABLE posts ADD COLUMN IF NOT EXISTS reposted BOOLEAN DEFAULT FALSE')
+        cur.execute('ALTER TABLE posts ADD COLUMN IF NOT EXISTS message_id BIGINT')
+        cur.execute('ALTER TABLE posts ADD COLUMN IF NOT EXISTS views INTEGER DEFAULT 0')
+        cur.execute('ALTER TABLE posts ADD COLUMN IF NOT EXISTS reactions INTEGER DEFAULT 0')
+        cur.execute('ALTER TABLE posts ADD COLUMN IF NOT EXISTS topic TEXT')
+        # Индексы
         cur.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON posts(session_id)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_status ON posts(status)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_scheduled_publish ON posts(scheduled_publish_time)')
