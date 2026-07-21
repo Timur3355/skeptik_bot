@@ -280,12 +280,8 @@ def clean_text(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
-# ======================== ИСПРАВЛЕННАЯ ФУНКЦИЯ РАЗБИВКИ =========================
 def split_text(text, max_len=1200, max_bytes=3400):
-    """
-    Разбивает текст на части так, чтобы каждая часть не превышала max_len символов
-    и max_bytes байт в UTF-8. Гарантирует разбивку даже при эмодзи.
-    """
+    """Разбивает текст на части, не превышающие max_len и max_bytes."""
     if len(text) <= max_len and len(text.encode('utf-8')) <= max_bytes:
         return [text]
 
@@ -405,7 +401,7 @@ def generate_post():
             time.sleep(3)
     raise Exception("Не удалось получить ответ")
 
-# ======================== КАРТИНКА (с проверкой на чёрное) =========================
+# ======================== КАРТИНКА =========================
 def is_image_black(image_path):
     try:
         img = Image.open(image_path)
@@ -636,13 +632,13 @@ def send_message(chat_id, text):
 def check_and_repost():
     cutoff = (datetime.now() - timedelta(days=30)).isoformat()
     rows = execute_query(
-        'SELECT session_id, text FROM posts WHERE status = \'published\' AND reposted = 0 AND rating >= 3 AND published_at <= ?',
+        'SELECT session_id, text FROM posts WHERE status = \'published\' AND reposted = FALSE AND rating >= 3 AND published_at <= ?',
         (cutoff,), fetch=True
     )
     for row in rows:
         success = publish_text_only(row['text'])
         if success:
-            execute_query('UPDATE posts SET reposted = 1 WHERE session_id = ?', (row['session_id'],))
+            execute_query('UPDATE posts SET reposted = TRUE WHERE session_id = ?', (row['session_id'],))
             print(f"[DEBUG] Повторно опубликован пост {row['session_id']}")
         else:
             print(f"[ERROR] Ошибка репоста {row['session_id']}")
