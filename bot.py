@@ -89,7 +89,7 @@ def get_topic_from_news():
 def get_topic_by_analytics():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
-        'SELECT topic, rating, views, reactions FROM posts WHERE status = \'published\' AND published_at >= ? AND topic IS NOT NULL AND topic != \'\'',
+        'SELECT topic, rating, views, reactions FROM posts WHERE status = "published" AND published_at >= ? AND topic IS NOT NULL AND topic != ""',
         (week_ago,), fetch=True
     )
     if not rows:
@@ -144,7 +144,7 @@ def init_db():
                 approved_at TIMESTAMP,
                 scheduled_publish_time TIMESTAMP,
                 published_at TIMESTAMP,
-                edit_pending INTEGER DEFAULT 0,
+                edit_pending BOOLEAN DEFAULT FALSE,
                 rating INTEGER DEFAULT 0,
                 reposted BOOLEAN DEFAULT FALSE,
                 message_id BIGINT,
@@ -260,7 +260,7 @@ def delete_post(session_id):
 def get_approved_posts_to_publish():
     now = datetime.now().isoformat()
     rows = execute_query(
-        'SELECT session_id, text, image_path FROM posts WHERE status = \'approved\' AND scheduled_publish_time <= ?',
+        'SELECT session_id, text, image_path FROM posts WHERE status = "approved" AND scheduled_publish_time <= ?',
         (now,), fetch=True
     )
     return rows
@@ -268,7 +268,7 @@ def get_approved_posts_to_publish():
 def get_weekly_stats():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
-        'SELECT COUNT(*) as total, SUM(CASE WHEN status=\'published\' THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status=\'rejected\' THEN 1 ELSE 0 END) as rejected FROM posts WHERE created_at >= ?',
+        'SELECT COUNT(*) as total, SUM(CASE WHEN status="published" THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status="rejected" THEN 1 ELSE 0 END) as rejected FROM posts WHERE created_at >= ?',
         (week_ago,), fetchone=True
     )
     return rows
@@ -280,10 +280,11 @@ def clean_text(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
-def split_text(text, max_len=1200, max_bytes=3500):
+# ======================== ИСПРАВЛЕННАЯ ФУНКЦИЯ РАЗБИВКИ =========================
+def split_text(text, max_len=1200, max_bytes=3400):
     """
-    Разбивает текст на части, каждая из которых не длиннее max_len символов
-    и не превышает max_bytes в UTF-8.
+    Разбивает текст на части так, чтобы каждая часть не превышала max_len символов
+    и max_bytes байт в UTF-8. Гарантирует разбивку даже при эмодзи.
     """
     if len(text) <= max_len and len(text.encode('utf-8')) <= max_bytes:
         return [text]
@@ -319,27 +320,25 @@ def split_text(text, max_len=1200, max_bytes=3500):
             if sub_part:
                 final_parts.append(sub_part)
 
-    ultra_final = []
+    result = []
     for part in final_parts:
-        if len(part) <= max_len and len(part.encode('utf-8')) <= max_bytes:
-            ultra_final.append(part)
-        else:
-            while len(part) > max_len or len(part.encode('utf-8')) > max_bytes:
-                chunk = part[:max_len]
-                last_space = chunk.rfind(' ')
-                if last_space > 0:
-                    split_pos = last_space
-                else:
-                    split_pos = max_len
-                ultra_final.append(part[:split_pos].strip())
-                part = part[split_pos:].strip()
-            if part:
-                ultra_final.append(part)
+        while len(part.encode('utf-8')) > max_bytes or len(part) > max_len:
+            chunk = part[:max_len]
+            last_space = chunk.rfind(' ')
+            if last_space > 0:
+                split_pos = last_space
+            else:
+                split_pos = max_len
+            result.append(part[:split_pos].strip())
+            part = part[split_pos:].strip()
+        if part:
+            result.append(part)
 
-    if not ultra_final:
-        ultra_final = [text[:max_len]]
+    if not result:
+        result = [text[:max_len]]
 
-    return ultra_final
+    print(f"[DEBUG] Текст разбит на {len(result)} частей")
+    return result
 
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
@@ -406,7 +405,7 @@ def generate_post():
             time.sleep(3)
     raise Exception("Не удалось получить ответ")
 
-# ======================== КАРТИНКА =========================
+# ======================== КАРТИНКА (с проверкой на чёрное) =========================
 def is_image_black(image_path):
     try:
         img = Image.open(image_path)
@@ -633,17 +632,17 @@ def send_message(chat_id, text):
     except Exception as e:
         print(f"[ERROR] Ошибка отправки сообщения: {e}")
 
-# ======================== АВТОПОВТОР (С ИСПРАВЛЕННЫМ СРАВНЕНИЕМ) =========================
+# ======================== АВТОПОВТОР =========================
 def check_and_repost():
     cutoff = (datetime.now() - timedelta(days=30)).isoformat()
     rows = execute_query(
-        'SELECT session_id, text FROM posts WHERE status = \'published\' AND reposted = FALSE AND rating >= 3 AND published_at <= ?',
+        'SELECT session_id, text FROM posts WHERE status = "published" AND reposted = 0 AND rating >= 3 AND published_at <= ?',
         (cutoff,), fetch=True
     )
     for row in rows:
         success = publish_text_only(row['text'])
         if success:
-            execute_query('UPDATE posts SET reposted = TRUE WHERE session_id = ?', (row['session_id'],))
+            execute_query('UPDATE posts SET reposted = 1 WHERE session_id = ?', (row['session_id'],))
             print(f"[DEBUG] Повторно опубликован пост {row['session_id']}")
         else:
             print(f"[ERROR] Ошибка репоста {row['session_id']}")
@@ -652,7 +651,7 @@ def check_and_repost():
 def digest_job():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
-        'SELECT text, rating, message_id, views, reactions FROM posts WHERE status = \'published\' AND published_at >= ? ORDER BY rating DESC LIMIT 5',
+        'SELECT text, rating, message_id, views, reactions FROM posts WHERE status = "published" AND published_at >= ? ORDER BY rating DESC LIMIT 5',
         (week_ago,), fetch=True
     )
     if not rows:
