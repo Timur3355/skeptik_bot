@@ -89,7 +89,7 @@ def get_topic_from_news():
 def get_topic_by_analytics():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
-        'SELECT topic, rating, views, reactions FROM posts WHERE status = "published" AND published_at >= ? AND topic IS NOT NULL AND topic != ""',
+        'SELECT topic, rating, views, reactions FROM posts WHERE status = \'published\' AND published_at >= ? AND topic IS NOT NULL AND topic != \'\'',
         (week_ago,), fetch=True
     )
     if not rows:
@@ -260,7 +260,7 @@ def delete_post(session_id):
 def get_approved_posts_to_publish():
     now = datetime.now().isoformat()
     rows = execute_query(
-        'SELECT session_id, text, image_path FROM posts WHERE status = "approved" AND scheduled_publish_time <= ?',
+        'SELECT session_id, text, image_path FROM posts WHERE status = \'approved\' AND scheduled_publish_time <= ?',
         (now,), fetch=True
     )
     return rows
@@ -268,7 +268,7 @@ def get_approved_posts_to_publish():
 def get_weekly_stats():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
-        'SELECT COUNT(*) as total, SUM(CASE WHEN status="published" THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status="rejected" THEN 1 ELSE 0 END) as rejected FROM posts WHERE created_at >= ?',
+        'SELECT COUNT(*) as total, SUM(CASE WHEN status=\'published\' THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status=\'rejected\' THEN 1 ELSE 0 END) as rejected FROM posts WHERE created_at >= ?',
         (week_ago,), fetchone=True
     )
     return rows
@@ -636,7 +636,7 @@ def send_message(chat_id, text):
 def check_and_repost():
     cutoff = (datetime.now() - timedelta(days=30)).isoformat()
     rows = execute_query(
-        'SELECT session_id, text FROM posts WHERE status = "published" AND reposted = 0 AND rating >= 3 AND published_at <= ?',
+        'SELECT session_id, text FROM posts WHERE status = \'published\' AND reposted = 0 AND rating >= 3 AND published_at <= ?',
         (cutoff,), fetch=True
     )
     for row in rows:
@@ -651,7 +651,7 @@ def check_and_repost():
 def digest_job():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
-        'SELECT text, rating, message_id, views, reactions FROM posts WHERE status = "published" AND published_at >= ? ORDER BY rating DESC LIMIT 5',
+        'SELECT text, rating, message_id, views, reactions FROM posts WHERE status = \'published\' AND published_at >= ? ORDER BY rating DESC LIMIT 5',
         (week_ago,), fetch=True
     )
     if not rows:
