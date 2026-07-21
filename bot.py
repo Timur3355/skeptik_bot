@@ -15,6 +15,7 @@ import random
 import re
 import pytz
 import feedparser
+from PIL import Image
 
 # ======================== КОНФИГУРАЦИЯ =========================
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
@@ -88,7 +89,7 @@ def get_topic_from_news():
 def get_topic_by_analytics():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
-        "SELECT topic, rating, views, reactions FROM posts WHERE status = 'published' AND published_at >= ? AND topic IS NOT NULL AND topic != ''",
+        'SELECT topic, rating, views, reactions FROM posts WHERE status = "published" AND published_at >= ? AND topic IS NOT NULL AND topic != ""',
         (week_ago,), fetch=True
     )
     if not rows:
@@ -259,7 +260,7 @@ def delete_post(session_id):
 def get_approved_posts_to_publish():
     now = datetime.now().isoformat()
     rows = execute_query(
-        "SELECT session_id, text, image_path FROM posts WHERE status = 'approved' AND scheduled_publish_time <= ?",
+        'SELECT session_id, text, image_path FROM posts WHERE status = "approved" AND scheduled_publish_time <= ?',
         (now,), fetch=True
     )
     return rows
@@ -267,7 +268,7 @@ def get_approved_posts_to_publish():
 def get_weekly_stats():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
-        "SELECT COUNT(*) as total, SUM(CASE WHEN status='published' THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status='rejected' THEN 1 ELSE 0 END) as rejected FROM posts WHERE created_at >= ?",
+        'SELECT COUNT(*) as total, SUM(CASE WHEN status="published" THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status="rejected" THEN 1 ELSE 0 END) as rejected FROM posts WHERE created_at >= ?',
         (week_ago,), fetchone=True
     )
     return rows
@@ -279,28 +280,48 @@ def clean_text(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
-def split_text(text, max_len=3000):
-    if len(text) <= max_len:
+def split_text(text, max_len=1500, max_bytes=3500):
+    """Разбивает текст на части не длиннее max_len символов и max_bytes байт."""
+    if len(text) <= max_len and len(text.encode('utf-8')) <= max_bytes:
         return [text]
+
     parts = []
-    while len(text) > max_len:
-        chunk = text[:max_len]
-        last_punct = max(chunk.rfind('.'), chunk.rfind('!'), chunk.rfind('?'))
-        if last_punct > 0:
-            split_pos = last_punct + 1
+    current = ""
+    for word in text.split():
+        test = current + (" " + word if current else word)
+        if len(test) <= max_len and len(test.encode('utf-8')) <= max_bytes:
+            current = test
         else:
-            last_space = chunk.rfind(' ')
-            split_pos = last_space if last_space > 0 else max_len
-        parts.append(text[:split_pos].strip())
-        text = text[split_pos:].strip()
-    if text:
-        parts.append(text)
-    return parts
+            if current:
+                parts.append(current)
+            current = word
+    if current:
+        parts.append(current)
+
+    final_parts = []
+    for part in parts:
+        if len(part) > max_len or len(part.encode('utf-8')) > max_bytes:
+            sentences = re.split(r'(?<=[.!?])\s+', part)
+            sub_part = ""
+            for sent in sentences:
+                test = sub_part + (" " + sent if sub_part else sent)
+                if len(test) <= max_len and len(test.encode('utf-8')) <= max_bytes:
+                    sub_part = test
+                else:
+                    if sub_part:
+                        final_parts.append(sub_part)
+                    sub_part = sent
+            if sub_part:
+                final_parts.append(sub_part)
+        else:
+            final_parts.append(part)
+
+    return final_parts if final_parts else [text[:max_len]]
 
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
     topic = get_topic_by_analytics()
-    print(f"[DEBUG] Выбрана тема (аналитика): {topic}")
+    print(f"[DEBUG] Выбрана тема: {topic}")
 
     headers = API_HEADERS_FUNC(DEEPSEEK_API_KEY)
     payload = {
@@ -316,8 +337,8 @@ def generate_post():
                     "Используй эмодзи в начале абзацев, НЕ используй HTML.\n"
                     "В конце — Action Item с ✅.\n"
                     "Указывай период и источник (например, Q3 2023).\n"
-                    "В конце поста, после Action Item, добавь ссылку на источник: например, 'По данным отчёта компании за Q3 2023' или конкретный URL, если он у тебя есть.\n"
-                    "В конце поста добавь 3–5 хештегов, начинающихся с #, на основе ключевых слов (например, #магнит #ритейл #экспансия).\n"
+                    "После Action Item добавь ссылку на источник (например, 'По данным отчёта компании за Q3 2023').\n"
+                    "В конце поста добавь 3–5 хештегов, начинающихся с #.\n"
                     "После текста === и описание картинки (англ., 3–4 слова)."
                 )
             },
@@ -362,10 +383,9 @@ def generate_post():
             time.sleep(3)
     raise Exception("Не удалось получить ответ")
 
-# ======================== ГЕНЕРАЦИЯ КАРТИНКИ =========================
+# ======================== КАРТИНКА (с проверкой на чёрное) =========================
 def is_image_black(image_path):
     try:
-        from PIL import Image
         img = Image.open(image_path)
         if img.width < 50 or img.height < 50:
             return True
@@ -395,13 +415,13 @@ def generate_image(prompt, max_attempts=3):
             if resp.status_code == 200:
                 content = resp.content
                 if len(content) < 1000:
-                    print(f"[WARN] Слишком маленький файл ({len(content)} байт), повторная попытка")
+                    print(f"[WARN] Слишком маленький файл ({len(content)} байт), повтор")
                     time.sleep(2)
                     continue
                 with open("temp_image.jpg", "wb") as f:
                     f.write(content)
                 if is_image_black("temp_image.jpg"):
-                    print("[WARN] Чёрное изображение, пробуем упрощённый промпт")
+                    print("[WARN] Обнаружено чёрное изображение, пробуем с упрощённым промптом")
                     os.remove("temp_image.jpg")
                     prompt = "retail illustration, business, comparison, sarcastic, modern"
                     continue
@@ -447,7 +467,7 @@ def send_for_approval_no_image(post_text, topic):
     session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
     save_post(session_id, post_text, "", "", topic)
 
-    full_parts = split_text(post_text, max_len=3000)
+    full_parts = split_text(post_text)
     print(f"[DEBUG] Без картинки, разбито на {len(full_parts)} частей")
     for i, part in enumerate(full_parts, 1):
         text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -471,7 +491,7 @@ def send_for_approval_no_image(post_text, topic):
             return False
     return True
 
-# ======================== ПУБЛИКАЦИЯ В КАНАЛ =========================
+# ======================== ПУБЛИКАЦИЯ В КАНАЛ (с разбивкой продолжения) =========================
 def publish_to_telegram(text, image_path, session_id=None):
     try:
         if not os.path.exists(image_path):
@@ -504,13 +524,19 @@ def publish_to_telegram(text, image_path, session_id=None):
                 if message_id:
                     execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (message_id, session_id))
 
+        # Разбиваем продолжение на части
         if second_part:
-            text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-            text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": f"📎 Продолжение:\n\n{second_part}"}
-            text_resp = requests.post(text_url, json=text_data, timeout=30)
-            if text_resp.status_code != 200:
-                print(f"[ERROR] Ошибка отправки продолжения: {text_resp.text}")
-                return False
+            continuation_parts = split_text(second_part, max_len=2000)
+            for i, cont_part in enumerate(continuation_parts, 1):
+                text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+                text_data = {
+                    "chat_id": TELEGRAM_CHAT_ID,
+                    "text": f"📎 Продолжение (часть {i}/{len(continuation_parts)}):\n\n{cont_part}"
+                }
+                text_resp = requests.post(text_url, json=text_data, timeout=30)
+                if text_resp.status_code != 200:
+                    print(f"[ERROR] Ошибка отправки продолжения (часть {i}): {text_resp.text}")
+                    return False
 
         print("[DEBUG] Публикация успешна")
         return True
@@ -548,7 +574,7 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
                 print(f"[ERROR] Ошибка отправки фото: {resp.text}")
                 return False
 
-        full_parts = split_text(post_text, max_len=3000)
+        full_parts = split_text(post_text)
         print(f"[DEBUG] Полный текст разбит на {len(full_parts)} частей")
         for i, part in enumerate(full_parts, 1):
             byte_len = len(part.encode('utf-8'))
@@ -589,13 +615,13 @@ def send_message(chat_id, text):
 def check_and_repost():
     cutoff = (datetime.now() - timedelta(days=30)).isoformat()
     rows = execute_query(
-        "SELECT session_id, text FROM posts WHERE status = 'published' AND reposted = FALSE AND rating >= 3 AND published_at <= ?",
+        'SELECT session_id, text FROM posts WHERE status = "published" AND reposted = 0 AND rating >= 3 AND published_at <= ?',
         (cutoff,), fetch=True
     )
     for row in rows:
         success = publish_text_only(row['text'])
         if success:
-            execute_query("UPDATE posts SET reposted = TRUE WHERE session_id = ?", (row['session_id'],))
+            execute_query('UPDATE posts SET reposted = 1 WHERE session_id = ?', (row['session_id'],))
             print(f"[DEBUG] Повторно опубликован пост {row['session_id']}")
         else:
             print(f"[ERROR] Ошибка репоста {row['session_id']}")
@@ -604,7 +630,7 @@ def check_and_repost():
 def digest_job():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
-        "SELECT text, rating, message_id, views, reactions FROM posts WHERE status = 'published' AND published_at >= ? ORDER BY rating DESC LIMIT 5",
+        'SELECT text, rating, message_id, views, reactions FROM posts WHERE status = "published" AND published_at >= ? ORDER BY rating DESC LIMIT 5',
         (week_ago,), fetch=True
     )
     if not rows:
@@ -787,7 +813,7 @@ def publish_scheduled_posts():
             else:
                 print(f"[{datetime.now()}] ❌ Ошибка публикации {p['session_id']}")
 
-# ======================== ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ =========================
+# ======================== ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ (базовый) =========================
 def weekly_report():
     stats = get_weekly_stats()
     if stats:
