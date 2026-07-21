@@ -144,9 +144,9 @@ def init_db():
                 approved_at TIMESTAMP,
                 scheduled_publish_time TIMESTAMP,
                 published_at TIMESTAMP,
-                edit_pending BOOLEAN DEFAULT FALSE,
+                edit_pending INTEGER DEFAULT 0,
                 rating INTEGER DEFAULT 0,
-                reposted BOOLEAN DEFAULT FALSE,
+                reposted INTEGER DEFAULT 0,
                 message_id BIGINT,
                 views INTEGER DEFAULT 0,
                 reactions INTEGER DEFAULT 0
@@ -283,8 +283,7 @@ def clean_text(text):
 def split_text(text, max_len=1200, max_bytes=3500):
     """
     Разбивает текст на части, каждая из которых не длиннее max_len символов
-    и не превышает max_bytes в UTF-8. Гарантирует, что результат не будет содержать
-    слишком длинных частей даже при наличии эмодзи.
+    и не превышает max_bytes в UTF-8.
     """
     if len(text) <= max_len and len(text.encode('utf-8')) <= max_bytes:
         return [text]
@@ -407,7 +406,7 @@ def generate_post():
             time.sleep(3)
     raise Exception("Не удалось получить ответ")
 
-# ======================== КАРТИНКА (с проверкой на чёрное) =========================
+# ======================== КАРТИНКА =========================
 def is_image_black(image_path):
     try:
         img = Image.open(image_path)
@@ -515,7 +514,7 @@ def send_for_approval_no_image(post_text, topic):
             return False
     return True
 
-# ======================== ПУБЛИКАЦИЯ В КАНАЛ (с разбивкой продолжения) =========================
+# ======================== ПУБЛИКАЦИЯ В КАНАЛ =========================
 def publish_to_telegram(text, image_path, session_id=None):
     try:
         if not os.path.exists(image_path):
