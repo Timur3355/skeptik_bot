@@ -741,29 +741,27 @@ def job(auto_publish=False):
         print(f"[ERROR] job: {e}")
         traceback.print_exc()
 
-# ======================== ВЕБ-СЕРВЕР С ДИАГНОСТИКОЙ =========================
+# ======================== ФУНКЦИЯ ДЛЯ АСИНХРОННОГО ЗАПУСКА =========================
+def run_job_async():
+    """Запускает job в отдельном потоке и логирует результат."""
+    try:
+        job(auto_publish=False)
+    except Exception as e:
+        print(f"[ERROR] Асинхронный job упал: {e}")
+        traceback.print_exc()
+
+# ======================== ВЕБ-СЕРВЕР С АСИНХРОННЫМ /test =========================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/test':
-            old_stdout = sys.stdout
-            sys.stdout = io.StringIO()
-            try:
-                print(f"[DEBUG] /test вызван в {datetime.now()}")
-                job(auto_publish=False)
-                output = sys.stdout.getvalue()
-                self.send_response(200)
-                self.end_headers()
-                self.wfile.write(f"✅ Успешно (модерация)!\n\n{output}".encode())
-            except Exception as e:
-                output = sys.stdout.getvalue()
-                error_text = traceback.format_exc()
-                self.send_response(500)
-                self.end_headers()
-                self.wfile.write(f"❌ ОШИБКА: {str(e)}\n\n{output}\n\nСТЕК:\n{error_text}".encode())
-            finally:
-                sys.stdout = old_stdout
+            # Запускаем генерацию в фоне, чтобы не ждать ответа
+            threading.Thread(target=run_job_async, daemon=True).start()
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"✅ Генерация поста запущена в фоне. Результат придёт в Telegram через ~1-2 минуты.")
             return
         elif self.path == '/test_publish':
+            # Для авто-публикации тоже можно сделать асинхронным, но оставим синхронным для простоты
             old_stdout = sys.stdout
             sys.stdout = io.StringIO()
             try:
@@ -806,13 +804,19 @@ def keep_alive():
 threading.Thread(target=keep_alive, daemon=True).start()
 threading.Thread(target=poll_updates, daemon=True).start()
 
-schedule.every().day.at("06:55").do(lambda: job(auto_publish=False))
+# ======================== РАСПИСАНИЕ =========================
+# 15:00 UTC = 18:00 МСК – отправка на модерацию
+schedule.every().day.at("15:00").do(lambda: job(auto_publish=False))
+# 07:00 UTC = 10:00 МСК – публикация запланированных постов
 schedule.every().day.at("07:00").do(publish_scheduled_posts)
+# 17:00 UTC = 20:00 МСК – воскресный отчёт и дайджест
 schedule.every().sunday.at("17:00").do(weekly_report)
 schedule.every().sunday.at("17:00").do(digest_job)
 
 print("Бот запущен. Ожидание расписания...")
 print(f"Провайдер: {API_PROVIDER}, Модель: {MODEL_NAME}")
+print("Модерация каждый день в 18:00 МСК, публикация в 10:00 МСК.")
+print("Для теста откройте /test – генерация запустится в фоне.")
 
 while True:
     schedule.run_pending()
