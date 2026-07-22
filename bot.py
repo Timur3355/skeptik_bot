@@ -22,6 +22,10 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
+if not ADMIN_CHAT_ID:
+    ADMIN_CHAT_ID = "123456789"  # заглушка, чтобы не падало, но вы должны установить реальный ID!
+    print("[WARN] ADMIN_CHAT_ID не задан, установлена заглушка!")
+
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
@@ -524,8 +528,8 @@ def schedule_publish(session_id):
 def send_message(chat_id, text):
     try:
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
-    except:
-        pass
+    except Exception as e:
+        print(f"[ERROR] send_message: {e}")
 
 # ======================== АВТОПОВТОР И ДАЙДЖЕСТ =========================
 def check_and_repost():
@@ -756,14 +760,20 @@ def run_job_async():
         print(f"[ERROR] Асинхронный job упал: {e}")
         traceback.print_exc()
 
-# ======================== ВЕБ-СЕРВЕР С АСИНХРОННЫМ /test =========================
+# ======================== ВЕБ-СЕРВЕР С ДИАГНОСТИКОЙ В ОБРАБОТЧИКЕ =========================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        # Логируем каждый запрос
+        print(f"[HTTP] {self.path} вызван в {datetime.now()}")
+
         if self.path == '/test':
+            print("[TEST] /test вызван, запускаем фоновый поток...")
             threading.Thread(target=run_job_async, daemon=True).start()
+            print("[TEST] Поток запущен, отправляем ответ 200")
             self.send_response(200)
             self.end_headers()
             self.wfile.write("✅ Генерация поста запущена в фоне. Результат придёт в Telegram через ~1-2 минуты.".encode())
+            print("[TEST] Ответ отправлен")
             return
         elif self.path == '/test_publish':
             old_stdout = sys.stdout
