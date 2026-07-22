@@ -29,7 +29,6 @@ MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
 
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
-# ======================== ТЕМЫ ПО ДНЯМ (запасной вариант) =========================
 DAY_TOPICS = {
     0: "логистические провалы Ozon: затраты, сроки доставки, убытки",
     1: "штрафы и возвраты Wildberries: как компания зарабатывает на продавцах",
@@ -65,13 +64,8 @@ API_DEFAULT_MODEL = config["default_model"]
 if not MODEL_NAME:
     MODEL_NAME = API_DEFAULT_MODEL
 
-# ======================== RSS И АНАЛИТИКА =========================
 def get_topic_from_news():
-    rss_urls = [
-        "https://www.rbc.ru/rss/",
-        "https://www.kommersant.ru/RSS/news.xml",
-        "https://lenta.ru/rss/news"
-    ]
+    rss_urls = ["https://www.rbc.ru/rss/", "https://www.kommersant.ru/RSS/news.xml", "https://lenta.ru/rss/news"]
     keywords = ["ozon", "wildberries", "магнит", "ритейл", "торговля", "сеть"]
     try:
         for url in rss_urls:
@@ -95,7 +89,6 @@ def get_topic_by_analytics():
     if not rows:
         print("[DEBUG] Нет данных для аналитики, используем RSS")
         return get_topic_from_news()
-
     topic_stats = {}
     for row in rows:
         topic = row['topic']
@@ -106,10 +99,8 @@ def get_topic_by_analytics():
         if topic not in topic_stats:
             topic_stats[topic] = 0
         topic_stats[topic] += score
-
     if not topic_stats:
         return get_topic_from_news()
-
     best_topic = max(topic_stats, key=topic_stats.get)
     print(f"[DEBUG] Лучшая тема по аналитике: {best_topic} (score: {topic_stats[best_topic]:.1f})")
     return best_topic
@@ -131,6 +122,7 @@ def init_db():
     if db_type == 'postgres':
         conn = get_db_connection()
         cur = conn.cursor()
+        # Создаём таблицу с INTEGER для boolean-полей (чтобы избежать ошибок сравнения)
         cur.execute('''
             CREATE TABLE IF NOT EXISTS posts (
                 id SERIAL PRIMARY KEY,
@@ -144,14 +136,21 @@ def init_db():
                 approved_at TIMESTAMP,
                 scheduled_publish_time TIMESTAMP,
                 published_at TIMESTAMP,
-                edit_pending BOOLEAN DEFAULT FALSE,
+                edit_pending INTEGER DEFAULT 0,
                 rating INTEGER DEFAULT 0,
-                reposted BOOLEAN DEFAULT FALSE,
+                reposted INTEGER DEFAULT 0,
                 message_id BIGINT,
                 views INTEGER DEFAULT 0,
                 reactions INTEGER DEFAULT 0
             )
         ''')
+        # Проверяем и изменяем тип колонок, если они уже существуют как BOOLEAN
+        cur.execute("SELECT column_name, data_type FROM information_schema.columns WHERE table_name='posts' AND column_name IN ('reposted', 'edit_pending')")
+        cols = cur.fetchall()
+        for col in cols:
+            if col[1] == 'boolean':
+                cur.execute(f"ALTER TABLE posts ALTER COLUMN {col[0]} TYPE INTEGER USING ({col[0]}::int)")
+                print(f"[DEBUG] Колонка {col[0]} изменена на INTEGER")
         cur.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON posts(session_id)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_status ON posts(status)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_scheduled_publish ON posts(scheduled_publish_time)')
@@ -281,10 +280,8 @@ def clean_text(text):
     return text.strip()
 
 def split_text(text, max_len=1000, max_bytes=3000):
-    """Разбивает текст на части по символам и байтам (безопасно для Telegram)."""
     if len(text) <= max_len and len(text.encode('utf-8')) <= max_bytes:
         return [text]
-
     parts = []
     current = ""
     for word in text.split():
@@ -307,7 +304,6 @@ def split_text(text, max_len=1000, max_bytes=3000):
                 current = word
     if current:
         parts.append(current)
-
     if not parts:
         return [text[:max_len]]
     return parts
@@ -393,7 +389,6 @@ def is_image_black(image_path):
 def generate_image(prompt, max_attempts=3):
     if len(prompt) > 100:
         prompt = prompt[:100]
-
     for attempt in range(max_attempts):
         try:
             unique = f" {random.randint(1, 100000)}"
@@ -403,7 +398,6 @@ def generate_image(prompt, max_attempts=3):
             ts = int(time.time())
             url = f"https://image.pollinations.ai/prompt/{encoded}?width=1200&height=800&seed={seed}&t={ts}"
             print(f"[DEBUG] Pollinations URL (попытка {attempt+1}): {url}")
-
             resp = requests.get(url, timeout=90)
             if resp.status_code == 200:
                 content = resp.content
@@ -424,7 +418,6 @@ def generate_image(prompt, max_attempts=3):
         except Exception as e:
             print(f"[WARN] Ошибка Pollinations (попытка {attempt+1}): {e}")
         time.sleep(3)
-
     try:
         print("[DEBUG] Последняя попытка с минимальным промптом")
         url = f"https://image.pollinations.ai/prompt/business%20illustration?width=1200&height=800&seed={random.randint(1,999999)}&t={int(time.time())}"
@@ -436,7 +429,6 @@ def generate_image(prompt, max_attempts=3):
                 return "temp_image.jpg"
     except:
         pass
-
     print("[ERROR] Все попытки генерации картинки провалились")
     return None
 
@@ -483,19 +475,13 @@ def publish_to_telegram(text, image_path, session_id=None):
         if not os.path.exists(image_path):
             print("[ERROR] Файл картинки не найден")
             return False
-
-        # Разбиваем весь текст на части для канала
-        all_parts = split_text(text, max_len=1500)  # для сообщений (не для подписи)
+        all_parts = split_text(text, max_len=1500)
         first_part_for_photo = all_parts[0] if all_parts else ""
-
-        # Обрезаем первую часть до 900 символов для подписи к фото (безопасно для Telegram)
         if len(first_part_for_photo) > 900:
             first_part_for_photo = first_part_for_photo[:900] + "..."
-        # Лучше использовать отдельную разбивку для подписи
         caption_parts = split_text(text, max_len=900)
         caption_text = caption_parts[0] if caption_parts else ""
 
-        # Проверка прав бота
         check_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getChatMember"
         check_params = {"chat_id": TELEGRAM_CHAT_ID, "user_id": "me"}
         check_resp = requests.get(check_url, params=check_params, timeout=10)
@@ -504,7 +490,6 @@ def publish_to_telegram(text, image_path, session_id=None):
                 print("[ERROR] Бот не администратор")
                 return False
 
-        # Отправляем фото с caption
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         with open(image_path, "rb") as photo:
             files = {"photo": photo}
@@ -519,9 +504,8 @@ def publish_to_telegram(text, image_path, session_id=None):
                 if message_id:
                     execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (message_id, session_id))
 
-        # Отправляем остальные части как продолжение (если есть)
         if len(all_parts) > 1:
-            continuation_parts = all_parts[1:]  # все кроме первой
+            continuation_parts = all_parts[1:]
             total_cont = len(continuation_parts)
             for i, cont_part in enumerate(continuation_parts, 1):
                 text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -533,7 +517,6 @@ def publish_to_telegram(text, image_path, session_id=None):
                 if text_resp.status_code != 200:
                     print(f"[ERROR] Ошибка отправки продолжения (часть {i}): {text_resp.text}")
                     return False
-
         print("[DEBUG] Публикация успешна")
         return True
     except Exception as e:
@@ -544,7 +527,6 @@ def publish_to_telegram(text, image_path, session_id=None):
 # ======================== МОДЕРАЦИЯ =========================
 def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
     save_post(session_id, post_text, image_path, image_prompt, topic)
-
     first_part = split_text(post_text, max_len=1000)[0]
     caption = f"📝 Новый пост на проверку (начало):\n\n{first_part}..."
     try:
@@ -569,7 +551,6 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
             if resp.status_code != 200:
                 print(f"[ERROR] Ошибка отправки фото: {resp.text}")
                 return False
-
         full_parts = split_text(post_text)
         for i, part in enumerate(full_parts, 1):
             text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -581,7 +562,6 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
             if text_resp.status_code != 200:
                 print(f"[ERROR] Ошибка отправки полного текста (часть {i}): {text_resp.text}")
                 return False
-
         return True
     except Exception as e:
         print(f"[ERROR] Ошибка модерации: {e}")
@@ -604,7 +584,7 @@ def send_message(chat_id, text):
     except Exception as e:
         print(f"[ERROR] send_message: {e}")
 
-# ======================== АВТОПОВТОР (ИСПРАВЛЕН) =========================
+# ======================== АВТОПОВТОР =========================
 def check_and_repost():
     cutoff = (datetime.now() - timedelta(days=30)).isoformat()
     rows = execute_query(
@@ -626,7 +606,6 @@ def digest_job():
     if not rows:
         send_message(ADMIN_CHAT_ID, "📊 За неделю нет опубликованных постов.")
         return
-
     digest = "📅 **Лучшие посты недели:**\n\n"
     for i, row in enumerate(rows, 1):
         short_text = row['text'][:150] + "..." if len(row['text']) > 150 else row['text']
@@ -801,7 +780,6 @@ def publish_scheduled_posts():
             else:
                 print(f"[{datetime.now()}] ❌ Ошибка публикации {p['session_id']}")
 
-# ======================== ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ =========================
 def weekly_report():
     stats = get_weekly_stats()
     if stats:
@@ -825,7 +803,6 @@ def job(auto_publish=False):
             else:
                 send_for_approval_no_image(post_text, topic)
             return
-
         if auto_publish:
             if publish_to_telegram(post_text, image_path):
                 print(f"[{datetime.now()}] ✅ Пост опубликован (авто)")
@@ -907,7 +884,6 @@ def start_health_server():
 
 threading.Thread(target=start_health_server, daemon=True).start()
 
-# ======================== САМОПИНГ =========================
 def keep_alive():
     url = "https://skeptik-bot.onrender.com"
     while True:
@@ -919,11 +895,8 @@ def keep_alive():
         time.sleep(600)
 
 threading.Thread(target=keep_alive, daemon=True).start()
-
-# ======================== ЗАПУСК ПОЛЛИНГА =========================
 threading.Thread(target=poll_updates, daemon=True).start()
 
-# ======================== РАСПИСАНИЕ =========================
 schedule.every().day.at("06:55").do(lambda: job(auto_publish=False))
 schedule.every().day.at("07:00").do(publish_scheduled_posts)
 schedule.every().sunday.at("17:00").do(weekly_report)
