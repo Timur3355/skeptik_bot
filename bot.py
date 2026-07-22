@@ -122,7 +122,6 @@ def init_db():
     if db_type == 'postgres':
         conn = get_db_connection()
         cur = conn.cursor()
-        # Создаём таблицу с INTEGER для boolean-полей (чтобы избежать ошибок сравнения)
         cur.execute('''
             CREATE TABLE IF NOT EXISTS posts (
                 id SERIAL PRIMARY KEY,
@@ -138,19 +137,12 @@ def init_db():
                 published_at TIMESTAMP,
                 edit_pending INTEGER DEFAULT 0,
                 rating INTEGER DEFAULT 0,
-                reposted INTEGER DEFAULT 0,
+                reposted BOOLEAN DEFAULT FALSE,
                 message_id BIGINT,
                 views INTEGER DEFAULT 0,
                 reactions INTEGER DEFAULT 0
             )
         ''')
-        # Проверяем и изменяем тип колонок, если они уже существуют как BOOLEAN
-        cur.execute("SELECT column_name, data_type FROM information_schema.columns WHERE table_name='posts' AND column_name IN ('reposted', 'edit_pending')")
-        cols = cur.fetchall()
-        for col in cols:
-            if col[1] == 'boolean':
-                cur.execute(f"ALTER TABLE posts ALTER COLUMN {col[0]} TYPE INTEGER USING ({col[0]}::int)")
-                print(f"[DEBUG] Колонка {col[0]} изменена на INTEGER")
         cur.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON posts(session_id)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_status ON posts(status)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_scheduled_publish ON posts(scheduled_publish_time)')
@@ -584,16 +576,16 @@ def send_message(chat_id, text):
     except Exception as e:
         print(f"[ERROR] send_message: {e}")
 
-# ======================== АВТОПОВТОР =========================
+# ======================== АВТОПОВТОР (ИСПРАВЛЕН) =========================
 def check_and_repost():
     cutoff = (datetime.now() - timedelta(days=30)).isoformat()
     rows = execute_query(
-        "SELECT session_id, text FROM posts WHERE status = 'published' AND reposted = 0 AND rating >= 3 AND published_at <= ?",
+        "SELECT session_id, text FROM posts WHERE status = 'published' AND reposted = FALSE AND rating >= 3 AND published_at <= ?",
         (cutoff,), fetch=True
     )
     for row in rows:
         if publish_text_only(row['text']):
-            execute_query('UPDATE posts SET reposted = 1 WHERE session_id = ?', (row['session_id'],))
+            execute_query('UPDATE posts SET reposted = TRUE WHERE session_id = ?', (row['session_id'],))
             print(f"[DEBUG] Повторно опубликован пост {row['session_id']}")
 
 # ======================== ДАЙДЖЕСТ =========================
