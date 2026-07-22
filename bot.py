@@ -88,7 +88,7 @@ def get_topic_from_news():
 def get_topic_by_analytics():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
-        'SELECT topic, rating, views, reactions FROM posts WHERE status = "published" AND published_at >= ? AND topic IS NOT NULL AND topic != ""',
+        'SELECT topic, rating, views, reactions FROM posts WHERE status = \'published\' AND published_at >= ? AND topic IS NOT NULL AND topic != \'\'',
         (week_ago,), fetch=True
     )
     if not rows:
@@ -259,7 +259,7 @@ def delete_post(session_id):
 def get_approved_posts_to_publish():
     now = datetime.now().isoformat()
     rows = execute_query(
-        'SELECT session_id, text, image_path FROM posts WHERE status = "approved" AND scheduled_publish_time <= ?',
+        'SELECT session_id, text, image_path FROM posts WHERE status = \'approved\' AND scheduled_publish_time <= ?',
         (now,), fetch=True
     )
     return rows
@@ -267,7 +267,7 @@ def get_approved_posts_to_publish():
 def get_weekly_stats():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
-        'SELECT COUNT(*) as total, SUM(CASE WHEN status="published" THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status="rejected" THEN 1 ELSE 0 END) as rejected FROM posts WHERE created_at >= ?',
+        'SELECT COUNT(*) as total, SUM(CASE WHEN status = \'published\' THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status = \'rejected\' THEN 1 ELSE 0 END) as rejected FROM posts WHERE created_at >= ?',
         (week_ago,), fetchone=True
     )
     return rows
@@ -279,7 +279,6 @@ def clean_text(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
-# =========== ИСПРАВЛЕННАЯ split_text ===========
 def split_text(text, max_bytes=3000):
     """
     Разбивает текст на части так, чтобы каждая часть не превышала max_bytes в UTF-8.
@@ -290,27 +289,20 @@ def split_text(text, max_bytes=3000):
 
     parts = []
     while text:
-        # Берём префикс размером max_bytes
         encoded = text.encode('utf-8')[:max_bytes]
-        # Корректируем границу, чтобы не разорвать многобайтовый символ
         while encoded and (encoded[-1] & 0xC0) == 0x80:
             encoded = encoded[:-1]
-        # Декодируем часть
         part = encoded.decode('utf-8', errors='ignore')
-        # Ищем последний пробел, чтобы не разрывать слово
         last_space = part.rfind(' ')
         if last_space > 0:
             part = part[:last_space]
-        # Если часть пустая (очень длинное слово), режем посимвольно до лимита
         if not part:
-            # Берём по одному символу, пока не превысим max_bytes
             for i in range(1, len(text)):
                 if len(text[:i].encode('utf-8')) <= max_bytes:
                     part = text[:i]
                 else:
                     break
         parts.append(part)
-        # Удаляем из текста добавленную часть и убираем лишние пробелы
         text = text[len(part):].lstrip()
 
     return parts if parts else [text[:max_bytes]]
@@ -554,7 +546,7 @@ def send_message(chat_id, text):
 def check_and_repost():
     cutoff = (datetime.now() - timedelta(days=30)).isoformat()
     rows = execute_query(
-        'SELECT session_id, text FROM posts WHERE status = "published" AND reposted = 0 AND rating >= 3 AND published_at <= ?',
+        'SELECT session_id, text FROM posts WHERE status = \'published\' AND reposted = 0 AND rating >= 3 AND published_at <= ?',
         (cutoff,), fetch=True
     )
     for row in rows:
@@ -565,7 +557,7 @@ def check_and_repost():
 def digest_job():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
-        'SELECT text, rating, message_id, views, reactions FROM posts WHERE status = "published" AND published_at >= ? ORDER BY rating DESC LIMIT 5',
+        'SELECT text, rating, message_id, views, reactions FROM posts WHERE status = \'published\' AND published_at >= ? ORDER BY rating DESC LIMIT 5',
         (week_ago,), fetch=True
     )
     if not rows:
