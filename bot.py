@@ -706,15 +706,19 @@ def weekly_report():
         msg = "📊 Недостаточно данных."
     send_message(ADMIN_CHAT_ID, msg)
 
-# ======================== ОСНОВНАЯ ЗАДАЧА =========================
+# ======================== ОСНОВНАЯ ЗАДАЧА С ДИАГНОСТИКОЙ =========================
 def job(auto_publish=False):
     print(f"[DEBUG] job started at {datetime.now()}")
+    # Отправляем тестовое сообщение админу, чтобы убедиться, что бот может писать
+    send_message(ADMIN_CHAT_ID, f"🔄 Генерация поста начата в {datetime.now().strftime('%H:%M:%S')}")
     check_and_repost()
     print(f"[DEBUG] check_and_repost done")
     print(f"[{datetime.now()}] Генерация поста...")
     try:
         post_text, image_prompt, topic = generate_post()
+        print(f"[DEBUG] post_text получен, длина {len(post_text)}")
         image_path = generate_image(image_prompt)
+        print(f"[DEBUG] image_path = {image_path}")
         if not image_path:
             print("[WARN] Картинка не сгенерирована, публикую только текст")
             if auto_publish:
@@ -744,8 +748,10 @@ def job(auto_publish=False):
 # ======================== ФУНКЦИЯ ДЛЯ АСИНХРОННОГО ЗАПУСКА =========================
 def run_job_async():
     """Запускает job в отдельном потоке и логирует результат."""
+    print(f"[DEBUG] Фоновый поток запущен в {datetime.now()}")
     try:
         job(auto_publish=False)
+        print(f"[DEBUG] Фоновый поток завершился успешно в {datetime.now()}")
     except Exception as e:
         print(f"[ERROR] Асинхронный job упал: {e}")
         traceback.print_exc()
@@ -754,11 +760,9 @@ def run_job_async():
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/test':
-            # Запускаем генерацию в фоне, чтобы не ждать ответа
             threading.Thread(target=run_job_async, daemon=True).start()
             self.send_response(200)
             self.end_headers()
-            # Используем .encode() для не-ASCII строки
             self.wfile.write("✅ Генерация поста запущена в фоне. Результат придёт в Telegram через ~1-2 минуты.".encode())
             return
         elif self.path == '/test_publish':
