@@ -15,7 +15,7 @@ import random
 import re
 import pytz
 import feedparser
-from PIL import Image  # для проверки чёрных картинок
+from PIL import Image
 
 # ======================== КОНФИГУРАЦИЯ =========================
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
@@ -65,7 +65,7 @@ API_DEFAULT_MODEL = config["default_model"]
 if not MODEL_NAME:
     MODEL_NAME = API_DEFAULT_MODEL
 
-# ======================== RSS-ФУНКЦИЯ (запасной вариант) =========================
+# ======================== RSS И АНАЛИТИКА =========================
 def get_topic_from_news():
     rss_urls = [
         "https://www.rbc.ru/rss/",
@@ -86,9 +86,7 @@ def get_topic_from_news():
         print(f"[WARN] Ошибка RSS: {e}")
         return DAY_TOPICS.get(datetime.now().weekday(), DAY_TOPICS[0])
 
-# ======================== ФУНКЦИЯ АНАЛИТИКИ ТЕМ =========================
 def get_topic_by_analytics():
-    """Анализирует посты за неделю, выбирает тему с наибольшим рейтингом."""
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
         'SELECT topic, rating, views, reactions FROM posts WHERE status = "published" AND published_at >= ? AND topic IS NOT NULL AND topic != ""',
@@ -283,56 +281,38 @@ def clean_text(text):
     return text.strip()
 
 def split_text(text, max_len=1000, max_bytes=3000):
-    """
-    Разбивает текст на части так, чтобы каждая часть была не длиннее max_len символов
-    И НЕ ПРЕВЫШАЛА max_bytes в UTF-8 кодировке.
-    Если текст не влезает по байтам, режем по границе слова, но с проверкой байтов.
-    """
-    # Сначала проверяем, влезает ли текст целиком
+    """Разбивает текст на части по символам и байтам (безопасно для Telegram)."""
     if len(text) <= max_len and len(text.encode('utf-8')) <= max_bytes:
         return [text]
 
     parts = []
     current = ""
-
     for word in text.split():
-        # Пробуем добавить слово
         test = current + (" " + word if current else word)
-        # Проверяем и байты, и символы
         if len(test) <= max_len and len(test.encode('utf-8')) <= max_bytes:
             current = test
         else:
-            # Если текущая часть не пустая, сохраняем её
             if current:
                 parts.append(current)
-            # Начинаем новую часть с этого слова
-            # Если слово само по себе слишком длинное (>max_len или >max_bytes), 
-            # то принудительно режем его посимвольно
             if len(word) > max_len or len(word.encode('utf-8')) > max_bytes:
-                # Режем слово по байтам
                 while word:
                     chunk = word[:max_len]
-                    # Уменьшаем chunk, пока он не влезет по байтам
                     while len(chunk.encode('utf-8')) > max_bytes:
                         chunk = chunk[:-1]
                     parts.append(chunk)
                     word = word[len(chunk):]
                     if word:
-                        # Если остаток слишком длинный, продолжим цикл, но лучше сразу добавить
                         continue
             else:
                 current = word
-
     if current:
         parts.append(current)
 
-    # Если по какой-то причине parts пуст (маловероятно), возвращаем оригинал, обрезанный до max_len
     if not parts:
         return [text[:max_len]]
-
     return parts
 
-# ======================== ГЕНЕРАЦИЯ ПОСТА =========================
+# ======================== ГЕНЕРАЦИЯ =========================
 def generate_post():
     topic = get_topic_by_analytics()
     print(f"[DEBUG] Выбрана тема: {topic}")
@@ -351,8 +331,8 @@ def generate_post():
                     "Используй эмодзи в начале абзацев, НЕ используй HTML.\n"
                     "В конце — Action Item с ✅.\n"
                     "Указывай период и источник (например, Q3 2023).\n"
-                    "После Action Item добавь ссылку на источник (например, 'По данным отчёта компании за Q3 2023').\n"
-                    "В конце поста добавь 3–5 хештегов, начинающихся с #.\n"
+                    "После Action Item добавь ссылку на источник.\n"
+                    "В конце поста добавь 3–5 хештегов.\n"
                     "После текста === и описание картинки (англ., 3–4 слова)."
                 )
             },
@@ -385,7 +365,6 @@ def generate_post():
                 post_text = full_text.strip()
                 image_prompt = ""
             if len(image_prompt) < 10:
-                # короткий общий промпт, чтобы избежать чёрных картинок
                 image_prompt = "retail comparison illustration, business graph, sarcastic, modern, colorful"
             return post_text, image_prompt, topic
         except requests.exceptions.Timeout:
@@ -398,9 +377,8 @@ def generate_post():
             time.sleep(3)
     raise Exception("Не удалось получить ответ")
 
-# ======================== ГЕНЕРАЦИЯ КАРТИНКИ (с проверкой на чёрное) =========================
+# ======================== КАРТИНКА =========================
 def is_image_black(image_path):
-    """Проверяет, является ли изображение почти полностью чёрным."""
     try:
         img = Image.open(image_path)
         if img.width < 50 or img.height < 50:
@@ -409,8 +387,7 @@ def is_image_black(image_path):
         pixels = list(img.getdata())
         avg = sum(pixels) / len(pixels)
         return avg < 30
-    except Exception as e:
-        print(f"[WARN] Не удалось проверить картинку: {e}")
+    except:
         return False
 
 def generate_image(prompt, max_attempts=3):
@@ -437,7 +414,7 @@ def generate_image(prompt, max_attempts=3):
                 with open("temp_image.jpg", "wb") as f:
                     f.write(content)
                 if is_image_black("temp_image.jpg"):
-                    print("[WARN] Обнаружено чёрное изображение, пробуем с упрощённым промптом")
+                    print("[WARN] Чёрное изображение, пробуем упрощённый промпт")
                     os.remove("temp_image.jpg")
                     prompt = "retail illustration, business, comparison, sarcastic, modern"
                     continue
@@ -448,7 +425,6 @@ def generate_image(prompt, max_attempts=3):
             print(f"[WARN] Ошибка Pollinations (попытка {attempt+1}): {e}")
         time.sleep(3)
 
-    # Последняя попытка с минимальным промптом
     try:
         print("[DEBUG] Последняя попытка с минимальным промптом")
         url = f"https://image.pollinations.ai/prompt/business%20illustration?width=1200&height=800&seed={random.randint(1,999999)}&t={int(time.time())}"
@@ -470,22 +446,15 @@ def publish_text_only(text):
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
         resp = requests.post(url, json=data, timeout=30)
-        if resp.status_code == 200:
-            print("[DEBUG] Пост без картинки опубликован")
-            return True
-        else:
-            print(f"[ERROR] Ошибка публикации без картинки: {resp.text}")
-            return False
+        return resp.status_code == 200
     except Exception as e:
-        print(f"[ERROR] Ошибка: {e}")
+        print(f"[ERROR] publish_text_only: {e}")
         return False
 
 def send_for_approval_no_image(post_text, topic):
     session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
     save_post(session_id, post_text, "", "", topic)
-
     full_parts = split_text(post_text)
-    print(f"[DEBUG] Без картинки, разбито на {len(full_parts)} частей")
     for i, part in enumerate(full_parts, 1):
         text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         text_data = {
@@ -508,17 +477,25 @@ def send_for_approval_no_image(post_text, topic):
             return False
     return True
 
-# ======================== ПУБЛИКАЦИЯ С КАРТИНКОЙ =========================
+# ======================== ПУБЛИКАЦИЯ В КАНАЛ С РАЗБИВКОЙ =========================
 def publish_to_telegram(text, image_path, session_id=None):
     try:
         if not os.path.exists(image_path):
             print("[ERROR] Файл картинки не найден")
             return False
 
-        parts = split_text(text, max_len=1000)  # для подписи к фото
-        first_part = parts[0] if parts else ""
-        second_part = parts[1] if len(parts) > 1 else ""
+        # Разбиваем весь текст на части для канала
+        all_parts = split_text(text, max_len=1500)  # для сообщений (не для подписи)
+        first_part_for_photo = all_parts[0] if all_parts else ""
 
+        # Обрезаем первую часть до 900 символов для подписи к фото (безопасно для Telegram)
+        if len(first_part_for_photo) > 900:
+            first_part_for_photo = first_part_for_photo[:900] + "..."
+        # Лучше использовать отдельную разбивку для подписи
+        caption_parts = split_text(text, max_len=900)
+        caption_text = caption_parts[0] if caption_parts else ""
+
+        # Проверка прав бота
         check_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getChatMember"
         check_params = {"chat_id": TELEGRAM_CHAT_ID, "user_id": "me"}
         check_resp = requests.get(check_url, params=check_params, timeout=10)
@@ -527,10 +504,11 @@ def publish_to_telegram(text, image_path, session_id=None):
                 print("[ERROR] Бот не администратор")
                 return False
 
+        # Отправляем фото с caption
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         with open(image_path, "rb") as photo:
             files = {"photo": photo}
-            data = {"chat_id": TELEGRAM_CHAT_ID, "caption": first_part}
+            data = {"chat_id": TELEGRAM_CHAT_ID, "caption": caption_text}
             resp = requests.post(url, files=files, data=data, timeout=30)
             if resp.status_code != 200:
                 print(f"[ERROR] Ошибка отправки фото: {resp.text}")
@@ -541,14 +519,15 @@ def publish_to_telegram(text, image_path, session_id=None):
                 if message_id:
                     execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (message_id, session_id))
 
-        # Разбиваем продолжение на части, если оно есть
-        if second_part:
-            continuation_parts = split_text(second_part, max_len=1000)  # разбиваем продолжение
+        # Отправляем остальные части как продолжение (если есть)
+        if len(all_parts) > 1:
+            continuation_parts = all_parts[1:]  # все кроме первой
+            total_cont = len(continuation_parts)
             for i, cont_part in enumerate(continuation_parts, 1):
                 text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
                 text_data = {
                     "chat_id": TELEGRAM_CHAT_ID,
-                    "text": f"📎 Продолжение (часть {i}/{len(continuation_parts)}):\n\n{cont_part}"
+                    "text": f"📎 Продолжение (часть {i}/{total_cont}):\n\n{cont_part}"
                 }
                 text_resp = requests.post(text_url, json=text_data, timeout=30)
                 if text_resp.status_code != 200:
@@ -562,7 +541,7 @@ def publish_to_telegram(text, image_path, session_id=None):
         traceback.print_exc()
         return False
 
-# ======================== ОТПРАВКА НА МОДЕРАЦИЮ =========================
+# ======================== МОДЕРАЦИЯ =========================
 def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
     save_post(session_id, post_text, image_path, image_prompt, topic)
 
@@ -591,12 +570,8 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
                 print(f"[ERROR] Ошибка отправки фото: {resp.text}")
                 return False
 
-        # Полный текст разбиваем на безопасные части
         full_parts = split_text(post_text)
-        print(f"[DEBUG] Полный текст разбит на {len(full_parts)} частей")
         for i, part in enumerate(full_parts, 1):
-            byte_len = len(part.encode('utf-8'))
-            print(f"[DEBUG] Часть {i}: длина в символах {len(part)}, в байтах {byte_len}")
             text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
             text_data = {
                 "chat_id": ADMIN_CHAT_ID,
@@ -627,9 +602,9 @@ def send_message(chat_id, text):
         data = {"chat_id": chat_id, "text": text}
         requests.post(url, json=data, timeout=10)
     except Exception as e:
-        print(f"[ERROR] Ошибка отправки сообщения: {e}")
+        print(f"[ERROR] send_message: {e}")
 
-# ======================== АВТОПОВТОР =========================
+# ======================== АВТОПОВТОР (ИСПРАВЛЕН) =========================
 def check_and_repost():
     cutoff = (datetime.now() - timedelta(days=30)).isoformat()
     rows = execute_query(
@@ -637,12 +612,9 @@ def check_and_repost():
         (cutoff,), fetch=True
     )
     for row in rows:
-        success = publish_text_only(row['text'])
-        if success:
+        if publish_text_only(row['text']):
             execute_query('UPDATE posts SET reposted = 1 WHERE session_id = ?', (row['session_id'],))
             print(f"[DEBUG] Повторно опубликован пост {row['session_id']}")
-        else:
-            print(f"[ERROR] Ошибка репоста {row['session_id']}")
 
 # ======================== ДАЙДЖЕСТ =========================
 def digest_job():
@@ -679,9 +651,7 @@ def digest_job():
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": digest, "parse_mode": "Markdown"}
     resp = requests.post(url, json=data, timeout=30)
-    if resp.status_code == 200:
-        print("[DEBUG] Дайджест опубликован")
-    else:
+    if resp.status_code != 200:
         print(f"[ERROR] Ошибка дайджеста: {resp.text}")
 
 # ======================== ОБРАБОТЧИК КНОПОК =========================
@@ -760,7 +730,7 @@ def answer_callback(chat_id, message_id, text):
         data = {"chat_id": chat_id, "text": text}
         requests.post(url, json=data, timeout=10)
     except Exception as e:
-        print(f"[ERROR] Ошибка callback: {e}")
+        print(f"[ERROR] answer_callback: {e}")
 
 # ======================== ПОЛЛИНГ =========================
 def poll_updates():
@@ -831,7 +801,7 @@ def publish_scheduled_posts():
             else:
                 print(f"[{datetime.now()}] ❌ Ошибка публикации {p['session_id']}")
 
-# ======================== ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ (базовый) =========================
+# ======================== ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ =========================
 def weekly_report():
     stats = get_weekly_stats()
     if stats:
