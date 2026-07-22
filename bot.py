@@ -758,10 +758,10 @@ class HealthHandler(BaseHTTPRequestHandler):
             threading.Thread(target=run_job_async, daemon=True).start()
             self.send_response(200)
             self.end_headers()
-            self.wfile.write(b"✅ Генерация поста запущена в фоне. Результат придёт в Telegram через ~1-2 минуты.")
+            # Используем .encode() для не-ASCII строки
+            self.wfile.write("✅ Генерация поста запущена в фоне. Результат придёт в Telegram через ~1-2 минуты.".encode())
             return
         elif self.path == '/test_publish':
-            # Для авто-публикации тоже можно сделать асинхронным, но оставим синхронным для простоты
             old_stdout = sys.stdout
             sys.stdout = io.StringIO()
             try:

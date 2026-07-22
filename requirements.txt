@@ -2,5 +2,5 @@ requests
 schedule
 pytz
 feedparser
-psycopg2-binary
 Pillow
+psycopg2-binary  # если используете PostgreSQL
