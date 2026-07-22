@@ -15,7 +15,7 @@ import random
 import re
 import pytz
 import feedparser
-from PIL import Image
+from PIL import Image  # для проверки чёрных картинок
 
 # ======================== КОНФИГУРАЦИЯ =========================
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
@@ -29,6 +29,7 @@ MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
 
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
+# ======================== ТЕМЫ ПО ДНЯМ (запасной вариант) =========================
 DAY_TOPICS = {
     0: "логистические провалы Ozon: затраты, сроки доставки, убытки",
     1: "штрафы и возвраты Wildberries: как компания зарабатывает на продавцах",
@@ -64,7 +65,7 @@ API_DEFAULT_MODEL = config["default_model"]
 if not MODEL_NAME:
     MODEL_NAME = API_DEFAULT_MODEL
 
-# ======================== RSS =========================
+# ======================== RSS-ФУНКЦИЯ (запасной вариант) =========================
 def get_topic_from_news():
     rss_urls = [
         "https://www.rbc.ru/rss/",
@@ -85,11 +86,12 @@ def get_topic_from_news():
         print(f"[WARN] Ошибка RSS: {e}")
         return DAY_TOPICS.get(datetime.now().weekday(), DAY_TOPICS[0])
 
-# ======================== АНАЛИТИКА ТЕМ =========================
+# ======================== ФУНКЦИЯ АНАЛИТИКИ ТЕМ =========================
 def get_topic_by_analytics():
+    """Анализирует посты за неделю, выбирает тему с наибольшим рейтингом."""
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
-        'SELECT topic, rating, views, reactions FROM posts WHERE status = \'published\' AND published_at >= ? AND topic IS NOT NULL AND topic != \'\'',
+        'SELECT topic, rating, views, reactions FROM posts WHERE status = "published" AND published_at >= ? AND topic IS NOT NULL AND topic != ""',
         (week_ago,), fetch=True
     )
     if not rows:
@@ -260,7 +262,7 @@ def delete_post(session_id):
 def get_approved_posts_to_publish():
     now = datetime.now().isoformat()
     rows = execute_query(
-        'SELECT session_id, text, image_path FROM posts WHERE status = \'approved\' AND scheduled_publish_time <= ?',
+        'SELECT session_id, text, image_path FROM posts WHERE status = "approved" AND scheduled_publish_time <= ?',
         (now,), fetch=True
     )
     return rows
@@ -268,7 +270,7 @@ def get_approved_posts_to_publish():
 def get_weekly_stats():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
-        'SELECT COUNT(*) as total, SUM(CASE WHEN status=\'published\' THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status=\'rejected\' THEN 1 ELSE 0 END) as rejected FROM posts WHERE created_at >= ?',
+        'SELECT COUNT(*) as total, SUM(CASE WHEN status="published" THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status="rejected" THEN 1 ELSE 0 END) as rejected FROM posts WHERE created_at >= ?',
         (week_ago,), fetchone=True
     )
     return rows
@@ -280,61 +282,55 @@ def clean_text(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
-def split_text(text, max_len=1200, max_bytes=3400):
-    """Разбивает текст на части, не превышающие max_len и max_bytes."""
+def split_text(text, max_len=1000, max_bytes=3000):
+    """
+    Разбивает текст на части так, чтобы каждая часть была не длиннее max_len символов
+    И НЕ ПРЕВЫШАЛА max_bytes в UTF-8 кодировке.
+    Если текст не влезает по байтам, режем по границе слова, но с проверкой байтов.
+    """
+    # Сначала проверяем, влезает ли текст целиком
     if len(text) <= max_len and len(text.encode('utf-8')) <= max_bytes:
         return [text]
 
     parts = []
     current = ""
+
     for word in text.split():
+        # Пробуем добавить слово
         test = current + (" " + word if current else word)
+        # Проверяем и байты, и символы
         if len(test) <= max_len and len(test.encode('utf-8')) <= max_bytes:
             current = test
         else:
+            # Если текущая часть не пустая, сохраняем её
             if current:
                 parts.append(current)
-            current = word
+            # Начинаем новую часть с этого слова
+            # Если слово само по себе слишком длинное (>max_len или >max_bytes), 
+            # то принудительно режем его посимвольно
+            if len(word) > max_len or len(word.encode('utf-8')) > max_bytes:
+                # Режем слово по байтам
+                while word:
+                    chunk = word[:max_len]
+                    # Уменьшаем chunk, пока он не влезет по байтам
+                    while len(chunk.encode('utf-8')) > max_bytes:
+                        chunk = chunk[:-1]
+                    parts.append(chunk)
+                    word = word[len(chunk):]
+                    if word:
+                        # Если остаток слишком длинный, продолжим цикл, но лучше сразу добавить
+                        continue
+            else:
+                current = word
+
     if current:
         parts.append(current)
 
-    final_parts = []
-    for part in parts:
-        if len(part) <= max_len and len(part.encode('utf-8')) <= max_bytes:
-            final_parts.append(part)
-        else:
-            sentences = re.split(r'(?<=[.!?])\s+', part)
-            sub_part = ""
-            for sent in sentences:
-                test = sub_part + (" " + sent if sub_part else sent)
-                if len(test) <= max_len and len(test.encode('utf-8')) <= max_bytes:
-                    sub_part = test
-                else:
-                    if sub_part:
-                        final_parts.append(sub_part)
-                    sub_part = sent
-            if sub_part:
-                final_parts.append(sub_part)
+    # Если по какой-то причине parts пуст (маловероятно), возвращаем оригинал, обрезанный до max_len
+    if not parts:
+        return [text[:max_len]]
 
-    result = []
-    for part in final_parts:
-        while len(part.encode('utf-8')) > max_bytes or len(part) > max_len:
-            chunk = part[:max_len]
-            last_space = chunk.rfind(' ')
-            if last_space > 0:
-                split_pos = last_space
-            else:
-                split_pos = max_len
-            result.append(part[:split_pos].strip())
-            part = part[split_pos:].strip()
-        if part:
-            result.append(part)
-
-    if not result:
-        result = [text[:max_len]]
-
-    print(f"[DEBUG] Текст разбит на {len(result)} частей")
-    return result
+    return parts
 
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
@@ -389,6 +385,7 @@ def generate_post():
                 post_text = full_text.strip()
                 image_prompt = ""
             if len(image_prompt) < 10:
+                # короткий общий промпт, чтобы избежать чёрных картинок
                 image_prompt = "retail comparison illustration, business graph, sarcastic, modern, colorful"
             return post_text, image_prompt, topic
         except requests.exceptions.Timeout:
@@ -401,8 +398,9 @@ def generate_post():
             time.sleep(3)
     raise Exception("Не удалось получить ответ")
 
-# ======================== КАРТИНКА =========================
+# ======================== ГЕНЕРАЦИЯ КАРТИНКИ (с проверкой на чёрное) =========================
 def is_image_black(image_path):
+    """Проверяет, является ли изображение почти полностью чёрным."""
     try:
         img = Image.open(image_path)
         if img.width < 50 or img.height < 50:
@@ -450,6 +448,7 @@ def generate_image(prompt, max_attempts=3):
             print(f"[WARN] Ошибка Pollinations (попытка {attempt+1}): {e}")
         time.sleep(3)
 
+    # Последняя попытка с минимальным промптом
     try:
         print("[DEBUG] Последняя попытка с минимальным промптом")
         url = f"https://image.pollinations.ai/prompt/business%20illustration?width=1200&height=800&seed={random.randint(1,999999)}&t={int(time.time())}"
@@ -509,14 +508,14 @@ def send_for_approval_no_image(post_text, topic):
             return False
     return True
 
-# ======================== ПУБЛИКАЦИЯ В КАНАЛ =========================
+# ======================== ПУБЛИКАЦИЯ С КАРТИНКОЙ =========================
 def publish_to_telegram(text, image_path, session_id=None):
     try:
         if not os.path.exists(image_path):
             print("[ERROR] Файл картинки не найден")
             return False
 
-        parts = split_text(text, max_len=1000)
+        parts = split_text(text, max_len=1000)  # для подписи к фото
         first_part = parts[0] if parts else ""
         second_part = parts[1] if len(parts) > 1 else ""
 
@@ -542,8 +541,9 @@ def publish_to_telegram(text, image_path, session_id=None):
                 if message_id:
                     execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (message_id, session_id))
 
+        # Разбиваем продолжение на части, если оно есть
         if second_part:
-            continuation_parts = split_text(second_part, max_len=2000)
+            continuation_parts = split_text(second_part, max_len=1000)  # разбиваем продолжение
             for i, cont_part in enumerate(continuation_parts, 1):
                 text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
                 text_data = {
@@ -591,6 +591,7 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
                 print(f"[ERROR] Ошибка отправки фото: {resp.text}")
                 return False
 
+        # Полный текст разбиваем на безопасные части
         full_parts = split_text(post_text)
         print(f"[DEBUG] Полный текст разбит на {len(full_parts)} частей")
         for i, part in enumerate(full_parts, 1):
@@ -632,13 +633,13 @@ def send_message(chat_id, text):
 def check_and_repost():
     cutoff = (datetime.now() - timedelta(days=30)).isoformat()
     rows = execute_query(
-        'SELECT session_id, text FROM posts WHERE status = \'published\' AND reposted = FALSE AND rating >= 3 AND published_at <= ?',
+        'SELECT session_id, text FROM posts WHERE status = "published" AND reposted = 0 AND rating >= 3 AND published_at <= ?',
         (cutoff,), fetch=True
     )
     for row in rows:
         success = publish_text_only(row['text'])
         if success:
-            execute_query('UPDATE posts SET reposted = TRUE WHERE session_id = ?', (row['session_id'],))
+            execute_query('UPDATE posts SET reposted = 1 WHERE session_id = ?', (row['session_id'],))
             print(f"[DEBUG] Повторно опубликован пост {row['session_id']}")
         else:
             print(f"[ERROR] Ошибка репоста {row['session_id']}")
@@ -647,7 +648,7 @@ def check_and_repost():
 def digest_job():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
-        'SELECT text, rating, message_id, views, reactions FROM posts WHERE status = \'published\' AND published_at >= ? ORDER BY rating DESC LIMIT 5',
+        'SELECT text, rating, message_id, views, reactions FROM posts WHERE status = "published" AND published_at >= ? ORDER BY rating DESC LIMIT 5',
         (week_ago,), fetch=True
     )
     if not rows:
