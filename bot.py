@@ -88,7 +88,7 @@ def get_topic_from_news():
 def get_topic_by_analytics():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
-        'SELECT topic, rating, views, reactions FROM posts WHERE status = \'published\' AND published_at >= ? AND topic IS NOT NULL AND topic != ""',
+        'SELECT topic, rating, views, reactions FROM posts WHERE status = \'published\' AND published_at >= ? AND topic IS NOT NULL AND topic != \'\'',
         (week_ago,), fetch=True
     )
     if not rows:
@@ -280,10 +280,6 @@ def clean_text(text):
     return text.strip()
 
 def split_text(text, max_bytes=4000):
-    """
-    Разбивает текст на части, каждая из которых не превышает max_bytes в UTF-8.
-    Режет строго по байтам, не разрывая многобайтовые символы.
-    """
     if len(text.encode('utf-8')) <= max_bytes:
         return [text]
 
