@@ -708,7 +708,9 @@ def weekly_report():
 
 # ======================== ОСНОВНАЯ ЗАДАЧА =========================
 def job(auto_publish=False):
+    print(f"[DEBUG] job started at {datetime.now()}")
     check_and_repost()
+    print(f"[DEBUG] check_and_repost done")
     print(f"[{datetime.now()}] Генерация поста...")
     try:
         post_text, image_prompt, topic = generate_post()
@@ -739,32 +741,28 @@ def job(auto_publish=False):
         print(f"[ERROR] job: {e}")
         traceback.print_exc()
 
-# ======================== ВЕБ-СЕРВЕР =========================
+# ======================== ВЕБ-СЕРВЕР С ДИАГНОСТИКОЙ =========================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/test':
             old_stdout = sys.stdout
             sys.stdout = io.StringIO()
             try:
+                print(f"[DEBUG] /test вызван в {datetime.now()}")
                 job(auto_publish=False)
                 output = sys.stdout.getvalue()
                 self.send_response(200)
                 self.end_headers()
-                try:
-                    self.wfile.write(f"✅ Успешно (модерация)!\n\n{output}".encode())
-                except BrokenPipeError:
-                    pass
+                self.wfile.write(f"✅ Успешно (модерация)!\n\n{output}".encode())
             except Exception as e:
                 output = sys.stdout.getvalue()
                 error_text = traceback.format_exc()
                 self.send_response(500)
                 self.end_headers()
-                try:
-                    self.wfile.write(f"❌ ОШИБКА: {str(e)}\n\n{output}\n\nСТЕК:\n{error_text}".encode())
-                except BrokenPipeError:
-                    pass
+                self.wfile.write(f"❌ ОШИБКА: {str(e)}\n\n{output}\n\nСТЕК:\n{error_text}".encode())
             finally:
                 sys.stdout = old_stdout
+            return
         elif self.path == '/test_publish':
             old_stdout = sys.stdout
             sys.stdout = io.StringIO()
@@ -773,21 +771,16 @@ class HealthHandler(BaseHTTPRequestHandler):
                 output = sys.stdout.getvalue()
                 self.send_response(200)
                 self.end_headers()
-                try:
-                    self.wfile.write(f"✅ Успешно (авто-публикация)!\n\n{output}".encode())
-                except BrokenPipeError:
-                    pass
+                self.wfile.write(f"✅ Успешно (авто-публикация)!\n\n{output}".encode())
             except Exception as e:
                 output = sys.stdout.getvalue()
                 error_text = traceback.format_exc()
                 self.send_response(500)
                 self.end_headers()
-                try:
-                    self.wfile.write(f"❌ ОШИБКА: {str(e)}\n\n{output}\n\nСТЕК:\n{error_text}".encode())
-                except BrokenPipeError:
-                    pass
+                self.wfile.write(f"❌ ОШИБКА: {str(e)}\n\n{output}\n\nСТЕК:\n{error_text}".encode())
             finally:
                 sys.stdout = old_stdout
+            return
         else:
             self.send_response(200)
             self.end_headers()
