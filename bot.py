@@ -88,7 +88,7 @@ def get_topic_from_news():
 def get_topic_by_analytics():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
-        'SELECT topic, rating, views, reactions FROM posts WHERE status = \'published\' AND published_at >= ? AND topic IS NOT NULL AND topic != \'\'',
+        'SELECT topic, rating, views, reactions FROM posts WHERE status = "published" AND published_at >= ? AND topic IS NOT NULL AND topic != ""',
         (week_ago,), fetch=True
     )
     if not rows:
@@ -259,7 +259,7 @@ def delete_post(session_id):
 def get_approved_posts_to_publish():
     now = datetime.now().isoformat()
     rows = execute_query(
-        'SELECT session_id, text, image_path FROM posts WHERE status = \'approved\' AND scheduled_publish_time <= ?',
+        'SELECT session_id, text, image_path FROM posts WHERE status = "approved" AND scheduled_publish_time <= ?',
         (now,), fetch=True
     )
     return rows
@@ -267,7 +267,7 @@ def get_approved_posts_to_publish():
 def get_weekly_stats():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
-        'SELECT COUNT(*) as total, SUM(CASE WHEN status = \'published\' THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status = \'rejected\' THEN 1 ELSE 0 END) as rejected FROM posts WHERE created_at >= ?',
+        'SELECT COUNT(*) as total, SUM(CASE WHEN status="published" THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status="rejected" THEN 1 ELSE 0 END) as rejected FROM posts WHERE created_at >= ?',
         (week_ago,), fetchone=True
     )
     return rows
@@ -279,33 +279,26 @@ def clean_text(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
-def split_text(text, max_bytes=3000):
+# =========== УПРОЩЁННАЯ ФУНКЦИЯ РАЗБИВКИ ===========
+def split_text(text, max_bytes=4000):
     """
-    Разбивает текст на части так, чтобы каждая часть не превышала max_bytes в UTF-8.
-    Сохраняет целостность слов и многобайтовых символов (эмодзи).
+    Разбивает текст на части, каждая из которых не превышает max_bytes в UTF-8.
+    Режет строго по байтам, не разрывая многобайтовые символы.
     """
     if len(text.encode('utf-8')) <= max_bytes:
         return [text]
 
     parts = []
     while text:
+        # Берём префикс размером max_bytes
         encoded = text.encode('utf-8')[:max_bytes]
+        # Корректируем, чтобы не разорвать символ
         while encoded and (encoded[-1] & 0xC0) == 0x80:
             encoded = encoded[:-1]
         part = encoded.decode('utf-8', errors='ignore')
-        last_space = part.rfind(' ')
-        if last_space > 0:
-            part = part[:last_space]
-        if not part:
-            for i in range(1, len(text)):
-                if len(text[:i].encode('utf-8')) <= max_bytes:
-                    part = text[:i]
-                else:
-                    break
         parts.append(part)
-        text = text[len(part):].lstrip()
-
-    return parts if parts else [text[:max_bytes]]
+        text = text[len(part):]
+    return parts
 
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
@@ -448,7 +441,7 @@ def publish_text_only(text):
 def send_for_approval_no_image(post_text, topic):
     session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
     save_post(session_id, post_text, "", "", topic)
-    full_parts = split_text(post_text, max_bytes=3000)
+    full_parts = split_text(post_text, max_bytes=4000)
     for i, part in enumerate(full_parts, 1):
         text_data = {
             "chat_id": ADMIN_CHAT_ID,
@@ -471,7 +464,8 @@ def publish_to_telegram(text, image_path, session_id=None):
     if not os.path.exists(image_path):
         return False
 
-    parts = split_text(text, max_bytes=1000)  # для подписи к фото
+    # Для подписи к фото – не более 1000 байт
+    parts = split_text(text, max_bytes=1000)
     first_part = parts[0] if parts else ""
     second_part = parts[1] if len(parts) > 1 else ""
 
@@ -487,6 +481,7 @@ def publish_to_telegram(text, image_path, session_id=None):
             if message_id:
                 execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (message_id, session_id))
 
+    # Если есть продолжение – разбиваем его на части по 3000 байт
     if second_part:
         continuation_parts = split_text(second_part, max_bytes=3000)
         for i, cont_part in enumerate(continuation_parts, 1):
@@ -500,6 +495,7 @@ def publish_to_telegram(text, image_path, session_id=None):
 def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
     save_post(session_id, post_text, image_path, image_prompt, topic)
 
+    # Подпись к фото – до 1000 байт
     first_part = split_text(post_text, max_bytes=1000)[0]
     caption = f"📝 Новый пост на проверку (начало):\n\n{first_part}..."
     with open(image_path, "rb") as photo:
@@ -519,7 +515,8 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
         }
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto", files={"photo": photo}, data=data, timeout=30)
 
-    full_parts = split_text(post_text, max_bytes=3000)
+    # Полный текст разбиваем на части по 4000 байт
+    full_parts = split_text(post_text, max_bytes=4000)
     for i, part in enumerate(full_parts, 1):
         text_data = {
             "chat_id": ADMIN_CHAT_ID,
@@ -542,22 +539,22 @@ def send_message(chat_id, text):
     except:
         pass
 
-# ======================== АВТОПОВТОР И ДАЙДЖЕСТ (исправлены булевы значения) =========================
+# ======================== АВТОПОВТОР И ДАЙДЖЕСТ =========================
 def check_and_repost():
     cutoff = (datetime.now() - timedelta(days=30)).isoformat()
     rows = execute_query(
-        'SELECT session_id, text FROM posts WHERE status = \'published\' AND reposted = FALSE AND rating >= 3 AND published_at <= ?',
+        'SELECT session_id, text FROM posts WHERE status = "published" AND reposted = 0 AND rating >= 3 AND published_at <= ?',
         (cutoff,), fetch=True
     )
     for row in rows:
         if publish_text_only(row['text']):
-            execute_query('UPDATE posts SET reposted = TRUE WHERE session_id = ?', (row['session_id'],))
+            execute_query('UPDATE posts SET reposted = 1 WHERE session_id = ?', (row['session_id'],))
             print(f"[DEBUG] Повторно опубликован пост {row['session_id']}")
 
 def digest_job():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
-        'SELECT text, rating, message_id, views, reactions FROM posts WHERE status = \'published\' AND published_at >= ? ORDER BY rating DESC LIMIT 5',
+        'SELECT text, rating, message_id, views, reactions FROM posts WHERE status = "published" AND published_at >= ? ORDER BY rating DESC LIMIT 5',
         (week_ago,), fetch=True
     )
     if not rows:
