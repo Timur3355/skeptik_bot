@@ -279,7 +279,6 @@ def clean_text(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
-# =========== УПРОЩЁННАЯ ФУНКЦИЯ РАЗБИВКИ ===========
 def split_text(text, max_bytes=4000):
     """
     Разбивает текст на части, каждая из которых не превышает max_bytes в UTF-8.
@@ -290,9 +289,7 @@ def split_text(text, max_bytes=4000):
 
     parts = []
     while text:
-        # Берём префикс размером max_bytes
         encoded = text.encode('utf-8')[:max_bytes]
-        # Корректируем, чтобы не разорвать символ
         while encoded and (encoded[-1] & 0xC0) == 0x80:
             encoded = encoded[:-1]
         part = encoded.decode('utf-8', errors='ignore')
@@ -464,12 +461,10 @@ def publish_to_telegram(text, image_path, session_id=None):
     if not os.path.exists(image_path):
         return False
 
-    # Для подписи к фото – не более 1000 байт
     parts = split_text(text, max_bytes=1000)
     first_part = parts[0] if parts else ""
     second_part = parts[1] if len(parts) > 1 else ""
 
-    # Отправка фото
     with open(image_path, "rb") as photo:
         data = {"chat_id": TELEGRAM_CHAT_ID, "caption": first_part}
         resp = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto", files={"photo": photo}, data=data, timeout=30)
@@ -481,7 +476,6 @@ def publish_to_telegram(text, image_path, session_id=None):
             if message_id:
                 execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (message_id, session_id))
 
-    # Если есть продолжение – разбиваем его на части по 3000 байт
     if second_part:
         continuation_parts = split_text(second_part, max_bytes=3000)
         for i, cont_part in enumerate(continuation_parts, 1):
@@ -495,7 +489,6 @@ def publish_to_telegram(text, image_path, session_id=None):
 def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
     save_post(session_id, post_text, image_path, image_prompt, topic)
 
-    # Подпись к фото – до 1000 байт
     first_part = split_text(post_text, max_bytes=1000)[0]
     caption = f"📝 Новый пост на проверку (начало):\n\n{first_part}..."
     with open(image_path, "rb") as photo:
@@ -515,7 +508,6 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
         }
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto", files={"photo": photo}, data=data, timeout=30)
 
-    # Полный текст разбиваем на части по 4000 байт
     full_parts = split_text(post_text, max_bytes=4000)
     for i, part in enumerate(full_parts, 1):
         text_data = {
@@ -543,12 +535,12 @@ def send_message(chat_id, text):
 def check_and_repost():
     cutoff = (datetime.now() - timedelta(days=30)).isoformat()
     rows = execute_query(
-        'SELECT session_id, text FROM posts WHERE status = \'published\' AND reposted = 0 AND rating >= 3 AND published_at <= ?',
+        'SELECT session_id, text FROM posts WHERE status = \'published\' AND reposted = FALSE AND rating >= 3 AND published_at <= ?',
         (cutoff,), fetch=True
     )
     for row in rows:
         if publish_text_only(row['text']):
-            execute_query('UPDATE posts SET reposted = 1 WHERE session_id = ?', (row['session_id'],))
+            execute_query('UPDATE posts SET reposted = TRUE WHERE session_id = ?', (row['session_id'],))
             print(f"[DEBUG] Повторно опубликован пост {row['session_id']}")
 
 def digest_job():
