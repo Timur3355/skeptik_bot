@@ -278,10 +278,6 @@ def clean_text(text):
     return text.strip()
 
 def split_text(text, max_bytes=3000):
-    """
-    Разбивает текст на части, каждая из которых не превышает max_bytes в UTF-8.
-    Старается не разрывать слова, но если слово не влезает, режет по границе байтов.
-    """
     if len(text.encode('utf-8')) <= max_bytes:
         return [text]
 
@@ -304,7 +300,6 @@ def split_text(text, max_bytes=3000):
                 current = word
                 current_bytes = word_bytes
             else:
-                # Слово слишком длинное – режем посимвольно
                 chunk = ""
                 for ch in word:
                     test_chunk = chunk + ch
@@ -315,7 +310,6 @@ def split_text(text, max_bytes=3000):
                             parts.append(chunk)
                             chunk = ch
                         else:
-                            # Если даже один символ не влезает (редкость), принудительно режем
                             parts.append(ch)
                             chunk = ""
                 if chunk:
@@ -329,11 +323,9 @@ def split_text(text, max_bytes=3000):
         parts.append(current)
 
     if not parts:
-        # Аварийный случай: обрезаем по байтам
         encoded = text.encode('utf-8')
         if len(encoded) <= max_bytes:
             return [text]
-        # Ищем границу слова
         cut = max_bytes
         while cut > 0 and (encoded[cut] & 0xC0) == 0x80:
             cut -= 1
@@ -455,7 +447,6 @@ def generate_image(prompt, max_attempts=3):
             print(f"[WARN] Ошибка Pollinations (попытка {attempt+1}): {e}")
         time.sleep(3)
 
-    # Последняя попытка с минимальным промптом
     try:
         print("[DEBUG] Последняя попытка с минимальным промптом")
         url = f"https://image.pollinations.ai/prompt/business%20illustration?width=1200&height=800&seed={random.randint(1,999999)}&t={int(time.time())}"
@@ -522,7 +513,7 @@ def publish_to_telegram(text, image_path, session_id=None):
             print("[ERROR] Файл картинки не найден")
             return False
 
-        parts = split_text(text, max_bytes=1000)  # для подписи к фото
+        parts = split_text(text, max_bytes=1000)
         first_part = parts[0] if parts else ""
         second_part = parts[1] if len(parts) > 1 else ""
 
@@ -549,7 +540,7 @@ def publish_to_telegram(text, image_path, session_id=None):
                     execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (message_id, session_id))
 
         if second_part:
-            continuation_parts = split_text(second_part)  # по умолчанию 3000 байт
+            continuation_parts = split_text(second_part)
             for i, cont_part in enumerate(continuation_parts, 1):
                 text_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
                 text_data = {
@@ -638,13 +629,13 @@ def send_message(chat_id, text):
 def check_and_repost():
     cutoff = (datetime.now() - timedelta(days=30)).isoformat()
     rows = execute_query(
-        "SELECT session_id, text FROM posts WHERE status = 'published' AND reposted = 0 AND rating >= 3 AND published_at <= ?",
+        "SELECT session_id, text FROM posts WHERE status = 'published' AND reposted = FALSE AND rating >= 3 AND published_at <= ?",
         (cutoff,), fetch=True
     )
     for row in rows:
         success = publish_text_only(row['text'])
         if success:
-            execute_query("UPDATE posts SET reposted = 1 WHERE session_id = ?", (row['session_id'],))
+            execute_query("UPDATE posts SET reposted = TRUE WHERE session_id = ?", (row['session_id'],))
             print(f"[DEBUG] Повторно опубликован пост {row['session_id']}")
         else:
             print(f"[ERROR] Ошибка репоста {row['session_id']}")
