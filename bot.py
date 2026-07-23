@@ -17,17 +17,36 @@ import pytz
 import feedparser
 from PIL import Image
 
+print("[START] Бот запускается...")
+
 # ======================== КОНФИГУРАЦИЯ =========================
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
-if not ADMIN_CHAT_ID:
-    ADMIN_CHAT_ID = "123456789"  # заглушка, чтобы не падало, но вы должны установить реальный ID!
-    print("[WARN] ADMIN_CHAT_ID не задан, установлена заглушка!")
-
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+print(f"[START] ADMIN_CHAT_ID = {ADMIN_CHAT_ID}")
+print(f"[START] TELEGRAM_BOT_TOKEN = {TELEGRAM_BOT_TOKEN[:10]}..." if TELEGRAM_BOT_TOKEN else "[START] TELEGRAM_BOT_TOKEN не задан!")
+print(f"[START] TELEGRAM_CHAT_ID = {TELEGRAM_CHAT_ID}")
+
+# ======================== БЫСТРЫЙ ТЕСТ ОТПРАВКИ СООБЩЕНИЙ =========================
+def test_send_message():
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        data = {"chat_id": ADMIN_CHAT_ID, "text": "✅ Бот запущен и может отправлять сообщения!"}
+        resp = requests.post(url, json=data, timeout=10)
+        print(f"[TEST] Статус отправки тестового сообщения: {resp.status_code}")
+        if resp.status_code == 200:
+            print("[TEST] Тестовое сообщение успешно отправлено!")
+        else:
+            print(f"[TEST] Ошибка отправки: {resp.text}")
+    except Exception as e:
+        print(f"[TEST] Исключение при отправке: {e}")
+
+test_send_message()
+
+# ======================== ОСНОВНОЙ КОД =========================
 API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
 MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
 
@@ -760,20 +779,21 @@ def run_job_async():
         print(f"[ERROR] Асинхронный job упал: {e}")
         traceback.print_exc()
 
-# ======================== ВЕБ-СЕРВЕР С ДИАГНОСТИКОЙ В ОБРАБОТЧИКЕ =========================
+# ======================== ВЕБ-СЕРВЕР С ПРЯМЫМ ТЕСТОМ =========================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        # Логируем каждый запрос
         print(f"[HTTP] {self.path} вызван в {datetime.now()}")
 
         if self.path == '/test':
-            print("[TEST] /test вызван, запускаем фоновый поток...")
+            print("[TEST] /test вызван")
+            # Сначала отправляем тестовое сообщение, чтобы подтвердить работу бота
+            send_message(ADMIN_CHAT_ID, "🔍 Тест обработчика /test выполнен!")
+            print("[TEST] Тестовое сообщение отправлено, запускаем фоновый поток...")
             threading.Thread(target=run_job_async, daemon=True).start()
             print("[TEST] Поток запущен, отправляем ответ 200")
             self.send_response(200)
             self.end_headers()
             self.wfile.write("✅ Генерация поста запущена в фоне. Результат придёт в Telegram через ~1-2 минуты.".encode())
-            print("[TEST] Ответ отправлен")
             return
         elif self.path == '/test_publish':
             old_stdout = sys.stdout
