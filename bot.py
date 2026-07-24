@@ -9,14 +9,17 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 API_PROVIDER = os.getenv("API_PROVIDER", "openai").lower()
-MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-v3")  # или deepseek-r1
 
+# --- Настройка модели в зависимости от провайдера ---
 if API_PROVIDER == "openai":
     API_URL = "https://api.chatanywhere.tech/v1/chat/completions"
+    MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")  # или "deepseek-r1"
 elif API_PROVIDER == "siliconflow":
     API_URL = "https://api.siliconflow.cn/v1/chat/completions"
+    MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-ai/DeepSeek-V3")
 else:
     API_URL = "https://openrouter.ai/api/v1/chat/completions"
+    MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
 
 print(f"API_PROVIDER: {API_PROVIDER}")
 print(f"API_URL: {API_URL}")
@@ -63,6 +66,7 @@ def generate_post():
             "max_tokens": 400
         }
         print("[GEN] Sending request to", API_URL)
+        print("[GEN] Payload:", payload)
         resp = requests.post(API_URL, headers=headers, json=payload, timeout=60)
         print("[GEN] API status:", resp.status_code)
         print("[GEN] API response preview:", resp.text[:500])
@@ -106,6 +110,6 @@ def start_server():
     server.serve_forever()
 
 threading.Thread(target=start_server, daemon=True).start()
-print("Bot is running with API_PROVIDER=openai, model=", MODEL_NAME)
+print("Bot is running (model: gpt-4o-mini)")
 while True:
     time.sleep(60)
