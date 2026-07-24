@@ -64,9 +64,10 @@ API_DEFAULT_MODEL = config["default_model"]
 if not MODEL_NAME:
     MODEL_NAME = API_DEFAULT_MODEL
 
-# ======================== БАЗА ДАННЫХ (инициализация отложена) =========================
+# ======================== БАЗА ДАННЫХ =========================
 DB_PATH = "posts.db"
 db_type = None
+
 def get_db_connection():
     if DATABASE_URL:
         import psycopg2
@@ -74,7 +75,6 @@ def get_db_connection():
         return psycopg2.connect(DATABASE_URL, sslmode='require')
     else:
         import sqlite3
-        from contextlib import closing
         return sqlite3.connect(DB_PATH)
 
 def init_db():
@@ -110,7 +110,6 @@ def init_db():
         cur.close()
         conn.close()
     else:
-        import sqlite3
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS posts (
@@ -279,7 +278,7 @@ def get_topic_by_analytics():
     print(f"[DEBUG] Лучшая тема по аналитике: {best_topic} (score: {topic_stats[best_topic]:.1f})")
     return best_topic
 
-# ======================== ГЕНЕРАЦИЯ ПОСТА =========================
+# ======================== ГЕНЕРАЦИЯ ПОСТА (таймаут 30 сек) =========================
 def generate_post():
     topic = get_topic_by_analytics()
     print(f"[DEBUG] Выбрана тема: {topic}")
@@ -312,7 +311,7 @@ def generate_post():
     }
     for attempt in range(3):
         try:
-            response = requests.post(API_URL, headers=headers, json=payload, timeout=60)
+            response = requests.post(API_URL, headers=headers, json=payload, timeout=30)
             if response.status_code != 200:
                 raise Exception(f"API вернул {response.status_code}: {response.text}")
             data = response.json()
@@ -342,7 +341,7 @@ def generate_post():
             time.sleep(3)
     raise Exception("Не удалось получить ответ")
 
-# ======================== ГЕНЕРАЦИЯ КАРТИНКИ =========================
+# ======================== ГЕНЕРАЦИЯ КАРТИНКИ (таймаут 45 сек) =========================
 def is_image_black(image_path):
     try:
         img = Image.open(image_path)
@@ -367,7 +366,7 @@ def generate_image(prompt, max_attempts=3):
             ts = int(time.time())
             url = f"https://image.pollinations.ai/prompt/{encoded}?width=1200&height=800&seed={seed}&t={ts}"
             print(f"[DEBUG] Pollinations URL (попытка {attempt+1}): {url}")
-            resp = requests.get(url, timeout=90)
+            resp = requests.get(url, timeout=45)
             if resp.status_code == 200:
                 content = resp.content
                 if len(content) < 1000:
@@ -390,7 +389,7 @@ def generate_image(prompt, max_attempts=3):
     try:
         print("[DEBUG] Последняя попытка с минимальным промптом")
         url = f"https://image.pollinations.ai/prompt/business%20illustration?width=1200&height=800&seed={random.randint(1,999999)}&t={int(time.time())}"
-        resp = requests.get(url, timeout=90)
+        resp = requests.get(url, timeout=45)
         if resp.status_code == 200 and len(resp.content) > 1000:
             with open("temp_image.jpg", "wb") as f:
                 f.write(resp.content)
@@ -499,8 +498,8 @@ def schedule_publish(session_id):
 def send_message(chat_id, text):
     try:
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
-    except:
-        pass
+    except Exception as e:
+        print(f"[ERROR] send_message: {e}")
 
 # ======================== АВТОПОВТОР И ДАЙДЖЕСТ =========================
 def check_and_repost():
@@ -679,7 +678,7 @@ def weekly_report():
 # ======================== ОСНОВНАЯ ЗАДАЧА =========================
 def job(auto_publish=False):
     print(f"[DEBUG] job started at {datetime.now()}")
-    # Убедимся, что БД инициализирована (если ещё нет)
+    send_message(ADMIN_CHAT_ID, f"🔄 Генерация поста начата в {datetime.now().strftime('%H:%M:%S')}")
     init_db()
     check_and_repost()
     print(f"[DEBUG] check_and_repost done")
@@ -713,28 +712,26 @@ def job(auto_publish=False):
     except Exception as e:
         print(f"[ERROR] job: {e}")
         traceback.print_exc()
-        raise
+        send_message(ADMIN_CHAT_ID, f"❌ Ошибка генерации: {str(e)[:200]}")
+
+# ======================== ФУНКЦИЯ ДЛЯ АСИНХРОННОГО ЗАПУСКА =========================
+def run_job_async():
+    try:
+        job(auto_publish=False)
+    except Exception as e:
+        send_message(ADMIN_CHAT_ID, f"❌ Ошибка при генерации: {str(e)[:200]}")
+        print(f"[ERROR] Асинхронный job упал: {e}")
+        traceback.print_exc()
 
 # ======================== ВЕБ-СЕРВЕР =========================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/test':
-            old_stdout = sys.stdout
-            sys.stdout = io.StringIO()
-            try:
-                job(auto_publish=False)
-                output = sys.stdout.getvalue()
-                self.send_response(200)
-                self.end_headers()
-                self.wfile.write(f"✅ Успешно (модерация)!\n\n{output}".encode())
-            except Exception as e:
-                output = sys.stdout.getvalue()
-                error_text = traceback.format_exc()
-                self.send_response(500)
-                self.end_headers()
-                self.wfile.write(f"❌ ОШИБКА: {str(e)}\n\n{output}\n\nСТЕК:\n{error_text}".encode())
-            finally:
-                sys.stdout = old_stdout
+            print("[TEST] Запуск фоновой генерации...")
+            threading.Thread(target=run_job_async, daemon=True).start()
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write("✅ Генерация поста запущена в фоне. Результат придёт в Telegram через 1-2 минуты.".encode())
             return
         elif self.path == '/test_publish':
             old_stdout = sys.stdout
@@ -777,11 +774,9 @@ def keep_alive():
 # ======================== ЗАПУСК =========================
 if __name__ == "__main__":
     print("[START] Бот запускается...")
-    # Инициализация БД перед стартом (быстрая операция, не должна влиять на порт)
     init_db()
     print("[START] База данных инициализирована")
 
-    # Запускаем веб-сервер, поллинг и самопинг в отдельных потоках
     threading.Thread(target=start_health_server, daemon=True).start()
     print("[START] Веб-сервер запущен")
     threading.Thread(target=poll_updates, daemon=True).start()
@@ -789,7 +784,6 @@ if __name__ == "__main__":
     threading.Thread(target=keep_alive, daemon=True).start()
     print("[START] Самопинг запущен")
 
-    # Настройка расписания
     schedule.every().day.at("15:00").do(lambda: job(auto_publish=False))  # 18:00 МСК
     schedule.every().day.at("07:00").do(publish_scheduled_posts)          # 10:00 МСК
     schedule.every().sunday.at("17:00").do(weekly_report)
