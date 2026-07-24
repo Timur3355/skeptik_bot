@@ -64,70 +64,21 @@ API_DEFAULT_MODEL = config["default_model"]
 if not MODEL_NAME:
     MODEL_NAME = API_DEFAULT_MODEL
 
-# ======================== RSS И АНАЛИТИКА =========================
-def get_topic_from_news():
-    rss_urls = [
-        "https://www.rbc.ru/rss/",
-        "https://www.kommersant.ru/RSS/news.xml",
-        "https://lenta.ru/rss/news"
-    ]
-    keywords = ["ozon", "wildberries", "магнит", "ритейл", "торговля", "сеть"]
-    try:
-        for url in rss_urls:
-            feed = feedparser.parse(url)
-            for entry in feed.entries[:5]:
-                title = entry.title.lower()
-                if any(kw in title for kw in keywords):
-                    summary = entry.summary if hasattr(entry, 'summary') else ""
-                    return f"{entry.title}. {summary[:100]}"
-        return DAY_TOPICS.get(datetime.now().weekday(), DAY_TOPICS[0])
-    except Exception as e:
-        print(f"[WARN] Ошибка RSS: {e}")
-        return DAY_TOPICS.get(datetime.now().weekday(), DAY_TOPICS[0])
-
-def get_topic_by_analytics():
-    week_ago = (datetime.now() - timedelta(days=7)).isoformat()
-    rows = execute_query(
-        'SELECT topic, rating, views, reactions FROM posts WHERE status = \'published\' AND published_at >= ? AND topic IS NOT NULL AND topic != \'\'',
-        (week_ago,), fetch=True
-    )
-    if not rows:
-        print("[DEBUG] Нет данных для аналитики, используем RSS")
-        return get_topic_from_news()
-
-    topic_stats = {}
-    for row in rows:
-        topic = row['topic']
-        rating = row['rating'] or 0
-        views = row['views'] or 0
-        reactions = row['reactions'] or 0
-        score = rating + views * 0.1 + reactions * 0.5
-        if topic not in topic_stats:
-            topic_stats[topic] = 0
-        topic_stats[topic] += score
-
-    if not topic_stats:
-        return get_topic_from_news()
-
-    best_topic = max(topic_stats, key=topic_stats.get)
-    print(f"[DEBUG] Лучшая тема по аналитике: {best_topic} (score: {topic_stats[best_topic]:.1f})")
-    return best_topic
-
-# ======================== БАЗА ДАННЫХ =========================
-if DATABASE_URL:
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-    def get_db_connection():
+# ======================== БАЗА ДАННЫХ (инициализация отложена) =========================
+DB_PATH = "posts.db"
+db_type = None
+def get_db_connection():
+    if DATABASE_URL:
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
         return psycopg2.connect(DATABASE_URL, sslmode='require')
-    db_type = 'postgres'
-else:
-    import sqlite3
-    from contextlib import closing
-    DB_PATH = "posts.db"
-    db_type = 'sqlite'
+    else:
+        import sqlite3
+        from contextlib import closing
+        return sqlite3.connect(DB_PATH)
 
 def init_db():
-    if db_type == 'postgres':
+    if DATABASE_URL:
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute('''
@@ -159,7 +110,8 @@ def init_db():
         cur.close()
         conn.close()
     else:
-        with closing(sqlite3.connect(DB_PATH)) as conn:
+        import sqlite3
+        with sqlite3.connect(DB_PATH) as conn:
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS posts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -185,42 +137,32 @@ def init_db():
             conn.execute('CREATE INDEX IF NOT EXISTS idx_status ON posts(status)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_scheduled_publish ON posts(scheduled_publish_time)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_topic ON posts(topic)')
-            conn.commit()
-init_db()
 
 def execute_query(query, params=None, fetch=False, fetchone=False):
-    if db_type == 'postgres':
+    conn = get_db_connection()
+    if DATABASE_URL:
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
         query = query.replace('?', '%s')
-        conn = get_db_connection()
         cur = conn.cursor(cursor_factory=RealDictCursor if fetch or fetchone else None)
-        cur.execute(query, params)
-        if fetch:
-            result = cur.fetchall()
-        elif fetchone:
-            result = cur.fetchone()
-        else:
-            result = None
-        conn.commit()
-        cur.close()
-        conn.close()
-        return result
     else:
-        with closing(sqlite3.connect(DB_PATH)) as conn:
-            conn.row_factory = sqlite3.Row
-            cur = conn.cursor()
-            cur.execute(query, params)
-            if fetch:
-                result = [dict(row) for row in cur.fetchall()]
-            elif fetchone:
-                row = cur.fetchone()
-                result = dict(row) if row else None
-            else:
-                result = None
-            conn.commit()
-            return result
+        import sqlite3
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+    cur.execute(query, params)
+    if fetch:
+        result = cur.fetchall()
+    elif fetchone:
+        result = cur.fetchone()
+    else:
+        result = None
+    conn.commit()
+    cur.close()
+    conn.close()
+    return result
 
 def save_post(session_id, text, image_path, image_prompt, topic):
-    if db_type == 'postgres':
+    if DATABASE_URL:
         query = '''
             INSERT INTO posts (session_id, text, image_path, image_prompt, topic, status, created_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
@@ -282,7 +224,6 @@ def clean_text(text):
 def split_text(text, max_bytes=4000):
     if len(text.encode('utf-8')) <= max_bytes:
         return [text]
-
     parts = []
     while text:
         encoded = text.encode('utf-8')[:max_bytes]
@@ -293,11 +234,55 @@ def split_text(text, max_bytes=4000):
         text = text[len(part):]
     return parts
 
+def get_topic_from_news():
+    rss_urls = [
+        "https://www.rbc.ru/rss/",
+        "https://www.kommersant.ru/RSS/news.xml",
+        "https://lenta.ru/rss/news"
+    ]
+    keywords = ["ozon", "wildberries", "магнит", "ритейл", "торговля", "сеть"]
+    try:
+        for url in rss_urls:
+            feed = feedparser.parse(url)
+            for entry in feed.entries[:5]:
+                title = entry.title.lower()
+                if any(kw in title for kw in keywords):
+                    summary = entry.summary if hasattr(entry, 'summary') else ""
+                    return f"{entry.title}. {summary[:100]}"
+        return DAY_TOPICS.get(datetime.now().weekday(), DAY_TOPICS[0])
+    except Exception as e:
+        print(f"[WARN] Ошибка RSS: {e}")
+        return DAY_TOPICS.get(datetime.now().weekday(), DAY_TOPICS[0])
+
+def get_topic_by_analytics():
+    week_ago = (datetime.now() - timedelta(days=7)).isoformat()
+    rows = execute_query(
+        'SELECT topic, rating, views, reactions FROM posts WHERE status = \'published\' AND published_at >= ? AND topic IS NOT NULL AND topic != \'\'',
+        (week_ago,), fetch=True
+    )
+    if not rows:
+        print("[DEBUG] Нет данных для аналитики, используем RSS")
+        return get_topic_from_news()
+    topic_stats = {}
+    for row in rows:
+        topic = row['topic']
+        rating = row['rating'] or 0
+        views = row['views'] or 0
+        reactions = row['reactions'] or 0
+        score = rating + views * 0.1 + reactions * 0.5
+        if topic not in topic_stats:
+            topic_stats[topic] = 0
+        topic_stats[topic] += score
+    if not topic_stats:
+        return get_topic_from_news()
+    best_topic = max(topic_stats, key=topic_stats.get)
+    print(f"[DEBUG] Лучшая тема по аналитике: {best_topic} (score: {topic_stats[best_topic]:.1f})")
+    return best_topic
+
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
     topic = get_topic_by_analytics()
     print(f"[DEBUG] Выбрана тема: {topic}")
-
     headers = API_HEADERS_FUNC(DEEPSEEK_API_KEY)
     payload = {
         "model": MODEL_NAME,
@@ -325,7 +310,6 @@ def generate_post():
         "temperature": 0.85,
         "max_tokens": 250
     }
-
     for attempt in range(3):
         try:
             response = requests.post(API_URL, headers=headers, json=payload, timeout=60)
@@ -374,7 +358,6 @@ def is_image_black(image_path):
 def generate_image(prompt, max_attempts=3):
     if len(prompt) > 100:
         prompt = prompt[:100]
-
     for attempt in range(max_attempts):
         try:
             unique = f" {random.randint(1, 100000)}"
@@ -384,7 +367,6 @@ def generate_image(prompt, max_attempts=3):
             ts = int(time.time())
             url = f"https://image.pollinations.ai/prompt/{encoded}?width=1200&height=800&seed={seed}&t={ts}"
             print(f"[DEBUG] Pollinations URL (попытка {attempt+1}): {url}")
-
             resp = requests.get(url, timeout=90)
             if resp.status_code == 200:
                 content = resp.content
@@ -405,7 +387,6 @@ def generate_image(prompt, max_attempts=3):
         except Exception as e:
             print(f"[WARN] Ошибка Pollinations (попытка {attempt+1}): {e}")
         time.sleep(3)
-
     try:
         print("[DEBUG] Последняя попытка с минимальным промптом")
         url = f"https://image.pollinations.ai/prompt/business%20illustration?width=1200&height=800&seed={random.randint(1,999999)}&t={int(time.time())}"
@@ -417,7 +398,6 @@ def generate_image(prompt, max_attempts=3):
                 return "temp_image.jpg"
     except:
         pass
-
     print("[ERROR] Все попытки генерации картинки провалились")
     return None
 
@@ -456,11 +436,9 @@ def send_for_approval_no_image(post_text, topic):
 def publish_to_telegram(text, image_path, session_id=None):
     if not os.path.exists(image_path):
         return False
-
     parts = split_text(text, max_bytes=1000)
     first_part = parts[0] if parts else ""
     second_part = parts[1] if len(parts) > 1 else ""
-
     with open(image_path, "rb") as photo:
         data = {"chat_id": TELEGRAM_CHAT_ID, "caption": first_part}
         resp = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto", files={"photo": photo}, data=data, timeout=30)
@@ -471,7 +449,6 @@ def publish_to_telegram(text, image_path, session_id=None):
             message_id = msg_data.get('result', {}).get('message_id')
             if message_id:
                 execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (message_id, session_id))
-
     if second_part:
         continuation_parts = split_text(second_part, max_bytes=3000)
         for i, cont_part in enumerate(continuation_parts, 1):
@@ -484,7 +461,6 @@ def publish_to_telegram(text, image_path, session_id=None):
 
 def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
     save_post(session_id, post_text, image_path, image_prompt, topic)
-
     first_part = split_text(post_text, max_bytes=1000)[0]
     caption = f"📝 Новый пост на проверку (начало):\n\n{first_part}..."
     with open(image_path, "rb") as photo:
@@ -503,7 +479,6 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
             })
         }
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto", files={"photo": photo}, data=data, timeout=30)
-
     full_parts = split_text(post_text, max_bytes=4000)
     for i, part in enumerate(full_parts, 1):
         text_data = {
@@ -548,7 +523,6 @@ def digest_job():
     if not rows:
         send_message(ADMIN_CHAT_ID, "📊 За неделю нет опубликованных постов.")
         return
-
     digest = "📅 **Лучшие посты недели:**\n\n"
     for i, row in enumerate(rows, 1):
         short_text = row['text'][:150] + "..." if len(row['text']) > 150 else row['text']
@@ -575,7 +549,6 @@ edit_mode = {}
 def process_callback(callback_data, chat_id, message_id):
     action, session_id = callback_data.split('_', 1)
     print(f"[DEBUG] Callback: {action}, {session_id}")
-
     if action == "rate_up":
         execute_query('UPDATE posts SET rating = rating + 1 WHERE session_id = ?', (session_id,))
         answer_callback(chat_id, message_id, "Спасибо за оценку! 👍")
@@ -584,7 +557,6 @@ def process_callback(callback_data, chat_id, message_id):
         execute_query('UPDATE posts SET rating = rating - 1 WHERE session_id = ?', (session_id,))
         answer_callback(chat_id, message_id, "Спасибо за оценку! 👎")
         return
-
     post_data = get_post(session_id)
     if not post_data:
         answer_callback(chat_id, message_id, "🔄 Черновик устарел, генерирую новый...")
@@ -601,11 +573,9 @@ def process_callback(callback_data, chat_id, message_id):
         except Exception as e:
             answer_callback(chat_id, message_id, f"❌ Ошибка: {str(e)[:100]}")
         return
-
     if post_data["status"] in ("published", "rejected", "approved"):
         answer_callback(chat_id, message_id, f"ℹ️ Пост уже {post_data['status']}.")
         return
-
     if action == "approve":
         schedule_publish(session_id)
         answer_callback(chat_id, message_id, "✅ Пост одобрен, будет опубликован в 10:00 МСК.")
@@ -709,6 +679,8 @@ def weekly_report():
 # ======================== ОСНОВНАЯ ЗАДАЧА =========================
 def job(auto_publish=False):
     print(f"[DEBUG] job started at {datetime.now()}")
+    # Убедимся, что БД инициализирована (если ещё нет)
+    init_db()
     check_and_repost()
     print(f"[DEBUG] check_and_repost done")
     print(f"[{datetime.now()}] Генерация поста...")
@@ -725,7 +697,6 @@ def job(auto_publish=False):
             else:
                 send_for_approval_no_image(post_text, topic)
             return
-
         if auto_publish:
             if publish_to_telegram(post_text, image_path):
                 print(f"[{datetime.now()}] ✅ Пост опубликован (авто)")
@@ -793,8 +764,6 @@ def start_health_server():
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
     server.serve_forever()
 
-threading.Thread(target=start_health_server, daemon=True).start()
-
 def keep_alive():
     url = "https://skeptik-bot.onrender.com"
     while True:
@@ -805,19 +774,32 @@ def keep_alive():
             print(f"[keep-alive] Ошибка пинга: {e}")
         time.sleep(600)
 
-threading.Thread(target=keep_alive, daemon=True).start()
-threading.Thread(target=poll_updates, daemon=True).start()
+# ======================== ЗАПУСК =========================
+if __name__ == "__main__":
+    print("[START] Бот запускается...")
+    # Инициализация БД перед стартом (быстрая операция, не должна влиять на порт)
+    init_db()
+    print("[START] База данных инициализирована")
 
-# ======================== РАСПИСАНИЕ =========================
-schedule.every().day.at("15:00").do(lambda: job(auto_publish=False))  # 18:00 МСК
-schedule.every().day.at("07:00").do(publish_scheduled_posts)          # 10:00 МСК
-schedule.every().sunday.at("17:00").do(weekly_report)
-schedule.every().sunday.at("17:00").do(digest_job)
+    # Запускаем веб-сервер, поллинг и самопинг в отдельных потоках
+    threading.Thread(target=start_health_server, daemon=True).start()
+    print("[START] Веб-сервер запущен")
+    threading.Thread(target=poll_updates, daemon=True).start()
+    print("[START] Поллинг запущен")
+    threading.Thread(target=keep_alive, daemon=True).start()
+    print("[START] Самопинг запущен")
 
-print("Бот запущен. Ожидание расписания...")
-print(f"Провайдер: {API_PROVIDER}, Модель: {MODEL_NAME}")
-print("Модерация каждый день в 18:00 МСК, публикация в 10:00 МСК.")
+    # Настройка расписания
+    schedule.every().day.at("15:00").do(lambda: job(auto_publish=False))  # 18:00 МСК
+    schedule.every().day.at("07:00").do(publish_scheduled_posts)          # 10:00 МСК
+    schedule.every().sunday.at("17:00").do(weekly_report)
+    schedule.every().sunday.at("17:00").do(digest_job)
+    print("[START] Расписание настроено")
 
-while True:
-    schedule.run_pending()
-    time.sleep(60)
+    print("Бот запущен. Ожидание расписания...")
+    print(f"Провайдер: {API_PROVIDER}, Модель: {MODEL_NAME}")
+    print("Модерация каждый день в 18:00 МСК, публикация в 10:00 МСК.")
+
+    while True:
+        schedule.run_pending()
+        time.sleep(60)
