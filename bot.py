@@ -431,14 +431,32 @@ def publish_text_only(text):
     except:
         return False
 
+def split_for_moderation(text, max_len=1000):
+    """Разбивает текст на части не длиннее max_len, сохраняя целостность слов."""
+    if len(text) <= max_len:
+        return [text]
+    parts = []
+    while len(text) > max_len:
+        chunk = text[:max_len]
+        last_space = chunk.rfind(' ')
+        if last_space > 0:
+            split_pos = last_space
+        else:
+            split_pos = max_len
+        parts.append(text[:split_pos].strip())
+        text = text[split_pos:].strip()
+    if text:
+        parts.append(text)
+    return parts
+
 def send_for_approval_no_image(post_text, topic):
     session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
     save_post(session_id, post_text, "", "", topic)
 
-    full_parts = split_text(post_text, max_bytes=4000)
-    for i, part in enumerate(full_parts, 1):
+    parts = split_for_moderation(post_text, max_len=1000)
+    for i, part in enumerate(parts, 1):
         if i == 1:
-            caption = f"📝 Новый пост на проверку (без картинки, часть 1/{len(full_parts)}):\n\n{part}"
+            caption = f"📝 Новый пост на проверку (без картинки, часть 1/{len(parts)}):\n\n{part}"
             reply_markup = json.dumps({
                 "inline_keyboard": [
                     [
@@ -450,7 +468,7 @@ def send_for_approval_no_image(post_text, topic):
                 ]
             })
         else:
-            caption = f"📝 Продолжение (часть {i}/{len(full_parts)}):\n\n{part}"
+            caption = f"📝 Продолжение (часть {i}/{len(parts)}):\n\n{part}"
             reply_markup = None
 
         text_data = {
@@ -527,11 +545,11 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
             print(f"[ERROR] Ошибка отправки фото на модерацию: {resp.text}")
             return False
 
-    # 2. Разбиваем текст на части и отправляем, кнопки только в первом сообщении
-    full_parts = split_text(post_text, max_bytes=4000)
-    for i, part in enumerate(full_parts, 1):
+    # 2. Разбиваем текст на части по 1000 символов (без обрезания)
+    parts = split_for_moderation(post_text, max_len=1000)
+    for i, part in enumerate(parts, 1):
         if i == 1:
-            caption = f"📝 Новый пост на проверку (часть 1/{len(full_parts)}):\n\n{part}"
+            caption = f"📝 Новый пост на проверку (часть 1/{len(parts)}):\n\n{part}"
             reply_markup = json.dumps({
                 "inline_keyboard": [
                     [
@@ -543,7 +561,7 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
                 ]
             })
         else:
-            caption = f"📝 Продолжение (часть {i}/{len(full_parts)}):\n\n{part}"
+            caption = f"📝 Продолжение (часть {i}/{len(parts)}):\n\n{part}"
             reply_markup = None
 
         text_data = {
@@ -561,7 +579,6 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
         if resp.status_code != 200:
             print(f"[ERROR] Ошибка отправки текста (часть {i}): {resp.text}")
             return False
-
     return True
 
 def schedule_publish(session_id):
