@@ -24,6 +24,12 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# Проверка переменных
+if not ADMIN_CHAT_ID:
+    print("[ERROR] ADMIN_CHAT_ID не задан!")
+if not TELEGRAM_BOT_TOKEN:
+    print("[ERROR] TELEGRAM_BOT_TOKEN не задан!")
+
 API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
 MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
 
@@ -66,7 +72,6 @@ if not MODEL_NAME:
 
 # ======================== БАЗА ДАННЫХ =========================
 DB_PATH = "posts.db"
-db_type = None
 
 def get_db_connection():
     if DATABASE_URL:
@@ -278,7 +283,7 @@ def get_topic_by_analytics():
     print(f"[DEBUG] Лучшая тема по аналитике: {best_topic} (score: {topic_stats[best_topic]:.1f})")
     return best_topic
 
-# ======================== ГЕНЕРАЦИЯ ПОСТА (таймаут 30 сек) =========================
+# ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
     topic = get_topic_by_analytics()
     print(f"[DEBUG] Выбрана тема: {topic}")
@@ -341,7 +346,7 @@ def generate_post():
             time.sleep(3)
     raise Exception("Не удалось получить ответ")
 
-# ======================== ГЕНЕРАЦИЯ КАРТИНКИ (таймаут 45 сек) =========================
+# ======================== ГЕНЕРАЦИЯ КАРТИНКИ =========================
 def is_image_black(image_path):
     try:
         img = Image.open(image_path)
@@ -675,13 +680,27 @@ def weekly_report():
         msg = "📊 Недостаточно данных."
     send_message(ADMIN_CHAT_ID, msg)
 
-# ======================== ОСНОВНАЯ ЗАДАЧА =========================
+# ======================== ОСНОВНАЯ ЗАДАЧА С ЛОГИРОВАНИЕМ =========================
 def job(auto_publish=False):
     print(f"[DEBUG] job started at {datetime.now()}")
-    send_message(ADMIN_CHAT_ID, f"🔄 Генерация поста начата в {datetime.now().strftime('%H:%M:%S')}")
-    init_db()
-    check_and_repost()
-    print(f"[DEBUG] check_and_repost done")
+    try:
+        send_message(ADMIN_CHAT_ID, f"🔄 Генерация поста начата в {datetime.now().strftime('%H:%M:%S')}")
+    except Exception as e:
+        print(f"[ERROR] Не удалось отправить уведомление: {e}")
+    try:
+        init_db()
+        print("[DEBUG] init_db done")
+    except Exception as e:
+        print(f"[ERROR] init_db error: {e}")
+        send_message(ADMIN_CHAT_ID, f"❌ Ошибка инициализации БД: {str(e)[:200]}")
+        raise
+    try:
+        check_and_repost()
+        print("[DEBUG] check_and_repost done")
+    except Exception as e:
+        print(f"[ERROR] check_and_repost error: {e}")
+        send_message(ADMIN_CHAT_ID, f"❌ Ошибка check_and_repost: {str(e)[:200]}")
+        raise
     print(f"[{datetime.now()}] Генерация поста...")
     try:
         post_text, image_prompt, topic = generate_post()
@@ -707,12 +726,15 @@ def job(auto_publish=False):
             ok = send_for_approval(post_text, image_path, image_prompt, session_id, topic)
             if ok:
                 print(f"[{datetime.now()}] ✅ Пост отправлен на модерацию")
+                send_message(ADMIN_CHAT_ID, "✅ Пост успешно отправлен на модерацию!")
             else:
                 print(f"[{datetime.now()}] ❌ Ошибка модерации")
+                send_message(ADMIN_CHAT_ID, "❌ Ошибка отправки на модерацию")
     except Exception as e:
         print(f"[ERROR] job: {e}")
         traceback.print_exc()
         send_message(ADMIN_CHAT_ID, f"❌ Ошибка генерации: {str(e)[:200]}")
+        raise
 
 # ======================== ФУНКЦИЯ ДЛЯ АСИНХРОННОГО ЗАПУСКА =========================
 def run_job_async():
