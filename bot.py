@@ -421,7 +421,7 @@ def generate_image(prompt, max_attempts=3):
     print("[ERROR] Все попытки генерации картинки провалились")
     return None
 
-# ======================== ПУБЛИКАЦИЯ (С ИСПРАВЛЕННОЙ КОДИРОВКОЙ) =========================
+# ======================== ПУБЛИКАЦИЯ (ИСПРАВЛЕННАЯ) =========================
 def publish_text_only(text):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -457,14 +457,19 @@ def send_for_approval_no_image(post_text, topic):
     return True
 
 def publish_to_telegram(text, image_path, session_id=None):
-    """Публикует фото без подписи, текст отдельными сообщениями"""
     if not os.path.exists(image_path):
         return False
 
-    # Отправляем фото без caption
+    # Отправляем фото с chat_id
     with open(image_path, "rb") as photo:
         files = {"photo": photo}
-        resp = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto", files=files, timeout=30)
+        data = {"chat_id": TELEGRAM_CHAT_ID}
+        resp = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
+            files=files,
+            data=data,
+            timeout=30
+        )
         if resp.status_code != 200:
             print(f"[ERROR] Ошибка отправки фото: {resp.text}")
             return False
@@ -481,7 +486,11 @@ def publish_to_telegram(text, image_path, session_id=None):
             "chat_id": TELEGRAM_CHAT_ID,
             "text": f"📝 Пост (часть {i}/{len(parts)}):\n\n{part}" if len(parts) > 1 else part
         }
-        resp = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=text_data, timeout=30)
+        resp = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json=text_data,
+            timeout=30
+        )
         if resp.status_code != 200:
             print(f"[ERROR] Ошибка отправки текста (часть {i}): {resp.text}")
             return False
@@ -490,10 +499,16 @@ def publish_to_telegram(text, image_path, session_id=None):
 def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
     save_post(session_id, post_text, image_path, image_prompt, topic)
 
-    # 1. Отправляем фото без подписи
+    # 1. Отправляем фото с chat_id
     with open(image_path, "rb") as photo:
         files = {"photo": photo}
-        resp = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto", files=files, timeout=30)
+        data = {"chat_id": ADMIN_CHAT_ID}
+        resp = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
+            files=files,
+            data=data,
+            timeout=30
+        )
         if resp.status_code != 200:
             print(f"[ERROR] Ошибка отправки фото на модерацию: {resp.text}")
             return False
@@ -515,7 +530,11 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
             ]
         })
     }
-    resp = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=text_data, timeout=30)
+    resp = requests.post(
+        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+        json=text_data,
+        timeout=30
+    )
     if resp.status_code != 200:
         print(f"[ERROR] Ошибка отправки текста на модерацию: {resp.text}")
         return False
