@@ -10,10 +10,9 @@ ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 API_PROVIDER = os.getenv("API_PROVIDER", "openai").lower()
 
-# --- Настройка модели в зависимости от провайдера ---
 if API_PROVIDER == "openai":
     API_URL = "https://api.chatanywhere.tech/v1/chat/completions"
-    MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")  # или "deepseek-r1"
+    MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
 elif API_PROVIDER == "siliconflow":
     API_URL = "https://api.siliconflow.cn/v1/chat/completions"
     MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-ai/DeepSeek-V3")
@@ -29,9 +28,11 @@ print(f"DEEPSEEK_API_KEY: {DEEPSEEK_API_KEY[:10] if DEEPSEEK_API_KEY else 'None'
 def send_message(chat_id, text):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        data = {"chat_id": chat_id, "text": text}
+        data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
         resp = requests.post(url, json=data, timeout=10)
         print("send_message status:", resp.status_code)
+        if resp.status_code != 200:
+            print("send_message error response:", resp.text)
         return resp.status_code == 200
     except Exception as e:
         print("send_message error:", e)
@@ -40,7 +41,7 @@ def send_message(chat_id, text):
 def generate_post():
     print("[GEN] Starting generation...")
     if not DEEPSEEK_API_KEY:
-        return None, "DEEPSEEK_API_KEY не задан в переменных окружения"
+        return None, "DEEPSEEK_API_KEY не задан"
     try:
         headers = {
             "Content-Type": "application/json",
@@ -66,10 +67,8 @@ def generate_post():
             "max_tokens": 400
         }
         print("[GEN] Sending request to", API_URL)
-        print("[GEN] Payload:", payload)
         resp = requests.post(API_URL, headers=headers, json=payload, timeout=60)
         print("[GEN] API status:", resp.status_code)
-        print("[GEN] API response preview:", resp.text[:500])
         if resp.status_code == 200:
             data = resp.json()
             post_text = data["choices"][0]["message"]["content"]
@@ -90,10 +89,16 @@ class Handler(BaseHTTPRequestHandler):
             print("/test called")
             post_text, error = generate_post()
             if post_text:
-                send_message(ADMIN_CHAT_ID, "✅ Пост сгенерирован! Проверь логи.")
-                self.send_response(200)
-                self.end_headers()
-                self.wfile.write(f"Пост сгенерирован, длина {len(post_text)}".encode())
+                # Отправляем сам пост админу
+                ok = send_message(ADMIN_CHAT_ID, f"📝 Новый пост на проверку:\n\n{post_text}")
+                if ok:
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(f"Пост сгенерирован и отправлен в Telegram (длина {len(post_text)})".encode())
+                else:
+                    self.send_response(500)
+                    self.end_headers()
+                    self.wfile.write(b"Пост сгенерирован, но не отправлен в Telegram (ошибка)")
             else:
                 self.send_response(500)
                 self.end_headers()
@@ -110,6 +115,6 @@ def start_server():
     server.serve_forever()
 
 threading.Thread(target=start_server, daemon=True).start()
-print("Bot is running (model: gpt-4o-mini)")
+print("Bot is running (will send post to Telegram)")
 while True:
     time.sleep(60)
