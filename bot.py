@@ -9,7 +9,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 API_PROVIDER = os.getenv("API_PROVIDER", "openai").lower()
-MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-ai/DeepSeek-V3")
+MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-v3")  # или deepseek-r1
 
 if API_PROVIDER == "openai":
     API_URL = "https://api.chatanywhere.tech/v1/chat/completions"
@@ -65,7 +65,7 @@ def generate_post():
         print("[GEN] Sending request to", API_URL)
         resp = requests.post(API_URL, headers=headers, json=payload, timeout=60)
         print("[GEN] API status:", resp.status_code)
-        print("[GEN] API response:", resp.text[:500])
+        print("[GEN] API response preview:", resp.text[:500])
         if resp.status_code == 200:
             data = resp.json()
             post_text = data["choices"][0]["message"]["content"]
@@ -106,6 +106,6 @@ def start_server():
     server.serve_forever()
 
 threading.Thread(target=start_server, daemon=True).start()
-print("Bot is running")
+print("Bot is running with API_PROVIDER=openai, model=", MODEL_NAME)
 while True:
     time.sleep(60)
