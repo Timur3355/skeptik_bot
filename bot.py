@@ -431,29 +431,51 @@ def publish_text_only(text):
     except:
         return False
 
-def split_for_moderation(text, max_len=1000):
-    """Разбивает текст на части не длиннее max_len, сохраняя целостность слов."""
-    if len(text) <= max_len:
-        return [text]
-    parts = []
-    while len(text) > max_len:
-        chunk = text[:max_len]
-        last_space = chunk.rfind(' ')
-        if last_space > 0:
-            split_pos = last_space
-        else:
-            split_pos = max_len
-        parts.append(text[:split_pos].strip())
-        text = text[split_pos:].strip()
-    if text:
-        parts.append(text)
-    return parts
+def publish_to_telegram(text, image_path, session_id=None):
+    if not os.path.exists(image_path):
+        return False
+
+    # Отправляем фото без подписи
+    with open(image_path, "rb") as photo:
+        files = {"photo": photo}
+        data = {"chat_id": TELEGRAM_CHAT_ID}
+        resp = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
+            files=files,
+            data=data,
+            timeout=30
+        )
+        if resp.status_code != 200:
+            print(f"[ERROR] Ошибка отправки фото: {resp.text}")
+            return False
+        if session_id:
+            msg_data = resp.json()
+            message_id = msg_data.get('result', {}).get('message_id')
+            if message_id:
+                execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (message_id, session_id))
+
+    # Отправляем текст, разбивая на части по байтам
+    parts = split_text(text, max_bytes=4000)
+    for i, part in enumerate(parts, 1):
+        text_data = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": f"📝 Пост (часть {i}/{len(parts)}):\n\n{part}" if len(parts) > 1 else part
+        }
+        resp = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json=text_data,
+            timeout=30
+        )
+        if resp.status_code != 200:
+            print(f"[ERROR] Ошибка отправки текста (часть {i}): {resp.text}")
+            return False
+    return True
 
 def send_for_approval_no_image(post_text, topic):
     session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
     save_post(session_id, post_text, "", "", topic)
 
-    parts = split_for_moderation(post_text, max_len=1000)
+    parts = split_text(post_text, max_bytes=4000)
     for i, part in enumerate(parts, 1):
         if i == 1:
             caption = f"📝 Новый пост на проверку (без картинки, часть 1/{len(parts)}):\n\n{part}"
@@ -488,46 +510,6 @@ def send_for_approval_no_image(post_text, topic):
             return False
     return True
 
-def publish_to_telegram(text, image_path, session_id=None):
-    if not os.path.exists(image_path):
-        return False
-
-    # Отправляем фото без подписи
-    with open(image_path, "rb") as photo:
-        files = {"photo": photo}
-        data = {"chat_id": TELEGRAM_CHAT_ID}
-        resp = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
-            files=files,
-            data=data,
-            timeout=30
-        )
-        if resp.status_code != 200:
-            print(f"[ERROR] Ошибка отправки фото: {resp.text}")
-            return False
-        if session_id:
-            msg_data = resp.json()
-            message_id = msg_data.get('result', {}).get('message_id')
-            if message_id:
-                execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (message_id, session_id))
-
-    # Отправляем текст, разбивая на части
-    parts = split_text(text, max_bytes=4000)
-    for i, part in enumerate(parts, 1):
-        text_data = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": f"📝 Пост (часть {i}/{len(parts)}):\n\n{part}" if len(parts) > 1 else part
-        }
-        resp = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json=text_data,
-            timeout=30
-        )
-        if resp.status_code != 200:
-            print(f"[ERROR] Ошибка отправки текста (часть {i}): {resp.text}")
-            return False
-    return True
-
 def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
     save_post(session_id, post_text, image_path, image_prompt, topic)
 
@@ -545,8 +527,8 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
             print(f"[ERROR] Ошибка отправки фото на модерацию: {resp.text}")
             return False
 
-    # 2. Разбиваем текст на части по 1000 символов (без обрезания)
-    parts = split_for_moderation(post_text, max_len=1000)
+    # 2. Разбиваем текст по байтам (4000 байт – безопасный лимит)
+    parts = split_text(post_text, max_bytes=4000)
     for i, part in enumerate(parts, 1):
         if i == 1:
             caption = f"📝 Новый пост на проверку (часть 1/{len(parts)}):\n\n{part}"
