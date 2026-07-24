@@ -282,6 +282,7 @@ def clean_text(text):
 def split_text(text, max_bytes=4000):
     if len(text.encode('utf-8')) <= max_bytes:
         return [text]
+
     parts = []
     while text:
         encoded = text.encode('utf-8')[:max_bytes]
@@ -456,26 +457,12 @@ def publish_to_telegram(text, image_path, session_id=None):
     if not os.path.exists(image_path):
         return False
 
-    # Если текст короткий – публикуем как обычно (фото + подпись)
-    if len(text) <= 1000:
-        with open(image_path, "rb") as photo:
-            data = {"chat_id": TELEGRAM_CHAT_ID, "caption": text}
-            resp = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto", files={"photo": photo}, data=data, timeout=30)
-            if resp.status_code == 200 and session_id:
-                msg_data = resp.json()
-                message_id = msg_data.get('result', {}).get('message_id')
-                if message_id:
-                    execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (message_id, session_id))
-            return resp.status_code == 200
-
-    # Длинный текст: разбиваем на первую часть (до 1000 символов) и продолжение
     parts = split_text(text, max_bytes=1000)
-    first_part = parts[0]
+    first_part = parts[0] if parts else ""
     second_part = parts[1] if len(parts) > 1 else ""
 
-    # Отправляем фото с первой частью
     with open(image_path, "rb") as photo:
-        data = {"chat_id": TELEGRAM_CHAT_ID, "caption": first_part + "..."}
+        data = {"chat_id": TELEGRAM_CHAT_ID, "caption": first_part}
         resp = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto", files={"photo": photo}, data=data, timeout=30)
         if resp.status_code != 200:
             return False
@@ -485,17 +472,14 @@ def publish_to_telegram(text, image_path, session_id=None):
             if message_id:
                 execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (message_id, session_id))
 
-    # Отправляем продолжение отдельным текстовым сообщением
     if second_part:
-        # Разбиваем продолжение на части, если оно тоже длинное
-        cont_parts = split_text(second_part, max_bytes=3000)
-        for i, cont_part in enumerate(cont_parts, 1):
+        continuation_parts = split_text(second_part, max_bytes=3000)
+        for i, cont_part in enumerate(continuation_parts, 1):
             text_data = {
                 "chat_id": TELEGRAM_CHAT_ID,
-                "text": f"📎 Продолжение (часть {i}/{len(cont_parts)}):\n\n{cont_part}"
+                "text": f"📎 Продолжение (часть {i}/{len(continuation_parts)}):\n\n{cont_part}"
             }
             requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=text_data, timeout=30)
-
     return True
 
 def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
@@ -540,8 +524,8 @@ def schedule_publish(session_id):
 def send_message(chat_id, text):
     try:
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
-    except Exception as e:
-        print(f"[ERROR] send_message: {e}")
+    except:
+        pass
 
 # ======================== АВТОПОВТОР И ДАЙДЖЕСТ =========================
 def check_and_repost():
@@ -725,7 +709,6 @@ def weekly_report():
 # ======================== ОСНОВНАЯ ЗАДАЧА =========================
 def job(auto_publish=False):
     print(f"[DEBUG] job started at {datetime.now()}")
-    send_message(ADMIN_CHAT_ID, f"🔄 Генерация поста начата в {datetime.now().strftime('%H:%M:%S')}")
     check_and_repost()
     print(f"[DEBUG] check_and_repost done")
     print(f"[{datetime.now()}] Генерация поста...")
@@ -759,25 +742,28 @@ def job(auto_publish=False):
     except Exception as e:
         print(f"[ERROR] job: {e}")
         traceback.print_exc()
-
-# ======================== АСИНХРОННЫЙ ЗАПУСК =========================
-def run_job_async():
-    print(f"[DEBUG] Фоновый поток запущен в {datetime.now()}")
-    try:
-        job(auto_publish=False)
-        print(f"[DEBUG] Фоновый поток завершился успешно в {datetime.now()}")
-    except Exception as e:
-        print(f"[ERROR] Асинхронный job упал: {e}")
-        traceback.print_exc()
+        raise
 
 # ======================== ВЕБ-СЕРВЕР =========================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/test':
-            threading.Thread(target=run_job_async, daemon=True).start()
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write("✅ Генерация поста запущена в фоне. Результат придёт в Telegram через ~1-2 минуты.".encode())
+            old_stdout = sys.stdout
+            sys.stdout = io.StringIO()
+            try:
+                job(auto_publish=False)
+                output = sys.stdout.getvalue()
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(f"✅ Успешно (модерация)!\n\n{output}".encode())
+            except Exception as e:
+                output = sys.stdout.getvalue()
+                error_text = traceback.format_exc()
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(f"❌ ОШИБКА: {str(e)}\n\n{output}\n\nСТЕК:\n{error_text}".encode())
+            finally:
+                sys.stdout = old_stdout
             return
         elif self.path == '/test_publish':
             old_stdout = sys.stdout
@@ -823,10 +809,10 @@ threading.Thread(target=keep_alive, daemon=True).start()
 threading.Thread(target=poll_updates, daemon=True).start()
 
 # ======================== РАСПИСАНИЕ =========================
-schedule.every().day.at("15:00").do(lambda: job(auto_publish=False))  # 18:00 МСК – модерация
-schedule.every().day.at("07:00").do(publish_scheduled_posts)          # 10:00 МСК – публикация
-schedule.every().sunday.at("17:00").do(weekly_report)                 # 20:00 МСК – отчёт
-schedule.every().sunday.at("17:00").do(digest_job)                   # 20:00 МСК – дайджест
+schedule.every().day.at("15:00").do(lambda: job(auto_publish=False))  # 18:00 МСК
+schedule.every().day.at("07:00").do(publish_scheduled_posts)          # 10:00 МСК
+schedule.every().sunday.at("17:00").do(weekly_report)
+schedule.every().sunday.at("17:00").do(digest_job)
 
 print("Бот запущен. Ожидание расписания...")
 print(f"Провайдер: {API_PROVIDER}, Модель: {MODEL_NAME}")
