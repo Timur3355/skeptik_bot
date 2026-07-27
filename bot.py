@@ -278,7 +278,7 @@ def clean_text(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
-def split_text(text, max_bytes=4000):
+def split_text(text, max_bytes=3000):
     if len(text.encode('utf-8')) <= max_bytes:
         return [text]
 
@@ -420,7 +420,7 @@ def generate_image(prompt, max_attempts=3):
     print("[ERROR] Все попытки генерации картинки провалились")
     return None
 
-# ======================== ПУБЛИКАЦИЯ =========================
+# ======================== ПУБЛИКАЦИЯ (ФИНАЛЬНАЯ ВЕРСИЯ) =========================
 def publish_text_only(text):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -434,10 +434,15 @@ def send_for_approval_no_image(post_text, topic):
     session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
     save_post(session_id, post_text, "", "", topic)
 
-    parts = split_text(post_text, max_bytes=4000)
+    parts = split_text(post_text, max_bytes=3000)
+    total = len(parts)
     for i, part in enumerate(parts, 1):
+        if total == 1:
+            caption = f"📝 Новый пост на проверку (без картинки):\n\n{part}"
+        else:
+            caption = f"📝 Новый пост на проверку (без картинки, часть {i}/{total}):\n\n{part}"
+        reply_markup = None
         if i == 1:
-            caption = f"📝 Новый пост на проверку (без картинки, часть 1/{len(parts)}):\n\n{part}"
             reply_markup = json.dumps({
                 "inline_keyboard": [
                     [
@@ -448,9 +453,6 @@ def send_for_approval_no_image(post_text, topic):
                     ]
                 ]
             })
-        else:
-            caption = f"📝 Продолжение (часть {i}/{len(parts)}):\n\n{part}"
-            reply_markup = None
 
         text_data = {
             "chat_id": ADMIN_CHAT_ID,
@@ -492,13 +494,19 @@ def publish_to_telegram(text, image_path, session_id=None):
             if message_id:
                 execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (message_id, session_id))
 
-    # Отправляем текст, разбивая на части
-    parts = split_text(text, max_bytes=4000)
+    # Отправляем текст, разбивая на части по байтам (3000 байт)
+    parts = split_text(text, max_bytes=3000)
     for i, part in enumerate(parts, 1):
-        text_data = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": f"📝 Пост (часть {i}/{len(parts)}):\n\n{part}" if len(parts) > 1 else part
-        }
+        if len(parts) == 1:
+            text_data = {
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": part
+            }
+        else:
+            text_data = {
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": f"📝 Пост (часть {i}/{len(parts)}):\n\n{part}"
+            }
         resp = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             json=text_data,
@@ -526,11 +534,16 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
             print(f"[ERROR] Ошибка отправки фото на модерацию: {resp.text}")
             return False
 
-    # 2. Разбиваем текст по байтам (4000 байт – безопасный лимит)
-    parts = split_text(post_text, max_bytes=4000)
+    # 2. Разбиваем текст по байтам (3000 байт)
+    parts = split_text(post_text, max_bytes=3000)
+    total = len(parts)
     for i, part in enumerate(parts, 1):
+        if total == 1:
+            caption = f"📝 Новый пост на проверку:\n\n{part}"
+        else:
+            caption = f"📝 Новый пост на проверку (часть {i}/{total}):\n\n{part}"
+        reply_markup = None
         if i == 1:
-            caption = f"📝 Новый пост на проверку (часть 1/{len(parts)}):\n\n{part}"
             reply_markup = json.dumps({
                 "inline_keyboard": [
                     [
@@ -541,9 +554,6 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
                     ]
                 ]
             })
-        else:
-            caption = f"📝 Продолжение (часть {i}/{len(parts)}):\n\n{part}"
-            reply_markup = None
 
         text_data = {
             "chat_id": ADMIN_CHAT_ID,
