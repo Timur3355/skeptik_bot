@@ -271,31 +271,29 @@ def get_weekly_stats():
     )
     return rows
 
-# ======================== ВСПОМОГАТЕЛЬНЫЕ =========================
-def clean_text(text):
-    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-    text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
-    text = re.sub(r'\n\s*\n', '\n\n', text)
-    return text.strip()
+# ======================== НОВАЯ ЛОГИКА РАЗБИВКИ =========================
+def split_into_sentences(text):
+    """Разбивает текст на предложения (по . ! ?)"""
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    return [s.strip() for s in sentences if s.strip()]
 
-def split_into_parts(text, max_len=500):
-    """Разбивает текст на части по max_len символов, режет по концам предложений."""
-    if len(text) <= max_len:
-        return [text]
+def split_into_parts(text, max_len=200):
+    """Группирует предложения в части не длиннее max_len символов."""
+    sentences = split_into_sentences(text)
     parts = []
-    while len(text) > max_len:
-        chunk = text[:max_len]
-        # Ищем последнюю точку, вопросительный или восклицательный знак
-        last_punct = max(chunk.rfind('.'), chunk.rfind('!'), chunk.rfind('?'))
-        if last_punct > 0:
-            split_pos = last_punct + 1
+    current = ""
+    for sentence in sentences:
+        if len(current) + len(sentence) + 1 <= max_len:
+            current += sentence + " "
         else:
-            last_space = chunk.rfind(' ')
-            split_pos = last_space if last_space > 0 else max_len
-        parts.append(text[:split_pos].strip())
-        text = text[split_pos:].strip()
-    if text:
-        parts.append(text)
+            if current:
+                parts.append(current.strip())
+            current = sentence + " "
+    if current:
+        parts.append(current.strip())
+    # Если не получилось разбить (одно предложение слишком длинное), режем принудительно
+    if not parts:
+        parts = [text[:max_len] + "..."]
     return parts
 
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
@@ -426,9 +424,16 @@ def generate_image(prompt, max_attempts=3):
     print("[ERROR] Все попытки генерации картинки провалились")
     return None
 
-# ======================== ПУБЛИКАЦИЯ С РАЗБИВКОЙ ПО 500 СИМВОЛОВ =========================
+# ======================== ОСТАЛЬНЫЕ ВСПОМОГАТЕЛЬНЫЕ =========================
+def clean_text(text):
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+    text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
+    text = re.sub(r'\n\s*\n', '\n\n', text)
+    return text.strip()
+
+# ======================== ПУБЛИКАЦИЯ (НОВАЯ ЛОГИКА) =========================
 def publish_text_only(text):
-    parts = split_into_parts(text, max_len=500)
+    parts = split_into_parts(text, max_len=200)
     for part in parts:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         data = {"chat_id": TELEGRAM_CHAT_ID, "text": part}
@@ -441,7 +446,7 @@ def send_for_approval_no_image(post_text, topic):
     session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
     save_post(session_id, post_text, "", "", topic)
 
-    parts = split_into_parts(post_text, max_len=500)
+    parts = split_into_parts(post_text, max_len=200)
     total = len(parts)
     for i, part in enumerate(parts, 1):
         if total == 1:
@@ -501,19 +506,13 @@ def publish_to_telegram(text, image_path, session_id=None):
             if message_id:
                 execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (message_id, session_id))
 
-    # Отправляем текст, разбивая на части по 500 символов
-    parts = split_into_parts(text, max_len=500)
+    # Отправляем текст, разбивая на предложения (не более 200 символов)
+    parts = split_into_parts(text, max_len=200)
     for i, part in enumerate(parts, 1):
         if len(parts) == 1:
-            text_data = {
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": part
-            }
+            text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": part}
         else:
-            text_data = {
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": f"📝 Пост (часть {i}/{len(parts)}):\n\n{part}"
-            }
+            text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": f"📝 Пост (часть {i}/{len(parts)}):\n\n{part}"}
         resp = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             json=text_data,
@@ -541,8 +540,8 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
             print(f"[ERROR] Ошибка отправки фото на модерацию: {resp.text}")
             return False
 
-    # 2. Разбиваем текст по 500 символов
-    parts = split_into_parts(post_text, max_len=500)
+    # 2. Разбиваем текст на предложения (не более 200 символов)
+    parts = split_into_parts(post_text, max_len=200)
     total = len(parts)
     for i, part in enumerate(parts, 1):
         if total == 1:
