@@ -278,18 +278,22 @@ def clean_text(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
-def split_text(text, max_bytes=3000):
-    if len(text.encode('utf-8')) <= max_bytes:
+def split_for_moderation(text, max_len=1000):
+    """Разбивает текст на части по max_len символов, не разрывая слова."""
+    if len(text) <= max_len:
         return [text]
-
     parts = []
-    while text:
-        encoded = text.encode('utf-8')[:max_bytes]
-        while encoded and (encoded[-1] & 0xC0) == 0x80:
-            encoded = encoded[:-1]
-        part = encoded.decode('utf-8', errors='ignore')
-        parts.append(part)
-        text = text[len(part):]
+    while len(text) > max_len:
+        chunk = text[:max_len]
+        last_space = chunk.rfind(' ')
+        if last_space > 0:
+            split_pos = last_space
+        else:
+            split_pos = max_len
+        parts.append(text[:split_pos].strip())
+        text = text[split_pos:].strip()
+    if text:
+        parts.append(text)
     return parts
 
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
@@ -434,7 +438,7 @@ def send_for_approval_no_image(post_text, topic):
     session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
     save_post(session_id, post_text, "", "", topic)
 
-    parts = split_text(post_text, max_bytes=3000)
+    parts = split_for_moderation(post_text, max_len=1000)
     total = len(parts)
     for i, part in enumerate(parts, 1):
         if total == 1:
@@ -494,8 +498,8 @@ def publish_to_telegram(text, image_path, session_id=None):
             if message_id:
                 execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (message_id, session_id))
 
-    # Отправляем текст, разбивая на части по байтам (3000 байт)
-    parts = split_text(text, max_bytes=3000)
+    # Отправляем текст, разбивая по 1000 символов
+    parts = split_for_moderation(text, max_len=1000)
     for i, part in enumerate(parts, 1):
         if len(parts) == 1:
             text_data = {
@@ -534,8 +538,8 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
             print(f"[ERROR] Ошибка отправки фото на модерацию: {resp.text}")
             return False
 
-    # 2. Разбиваем текст по байтам (3000 байт)
-    parts = split_text(post_text, max_bytes=3000)
+    # 2. Разбиваем текст по 1000 символов
+    parts = split_for_moderation(post_text, max_len=1000)
     total = len(parts)
     for i, part in enumerate(parts, 1):
         if total == 1:
