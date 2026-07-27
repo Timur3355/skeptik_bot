@@ -24,8 +24,8 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
-MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
+API_PROVIDER = os.getenv("API_PROVIDER", "openai").lower()
+MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-v3")
 
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
@@ -52,12 +52,11 @@ PROVIDER_CONFIG = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {key}",
             "HTTP-Referer": "https://skeptik-bot.onrender.com"
-            # X-Title удалён, чтобы избежать ошибки 'latin-1' codec
         }
     }
 }
 
-config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["openrouter"])
+config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["openai"])
 API_URL = config["url"]
 API_HEADERS_FUNC = config["headers"]
 API_DEFAULT_MODEL = config["default_model"]
@@ -293,24 +292,6 @@ def split_text(text, max_bytes=4000):
         text = text[len(part):]
     return parts
 
-def split_for_moderation(text, max_len=1000):
-    """Разбивает текст на части по max_len символов, не разрывая слова."""
-    if len(text) <= max_len:
-        return [text]
-    parts = []
-    while len(text) > max_len:
-        chunk = text[:max_len]
-        last_space = chunk.rfind(' ')
-        if last_space > 0:
-            split_pos = last_space
-        else:
-            split_pos = max_len
-        parts.append(text[:split_pos].strip())
-        text = text[split_pos:].strip()
-    if text:
-        parts.append(text)
-    return parts
-
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
     topic = get_topic_by_analytics()
@@ -453,7 +434,7 @@ def send_for_approval_no_image(post_text, topic):
     session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
     save_post(session_id, post_text, "", "", topic)
 
-    parts = split_for_moderation(post_text, max_len=1000)
+    parts = split_text(post_text, max_bytes=4000)
     for i, part in enumerate(parts, 1):
         if i == 1:
             caption = f"📝 Новый пост на проверку (без картинки, часть 1/{len(parts)}):\n\n{part}"
@@ -545,8 +526,8 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
             print(f"[ERROR] Ошибка отправки фото на модерацию: {resp.text}")
             return False
 
-    # 2. Принудительная разбивка по 1000 символов (Telegram не обрезает)
-    parts = split_for_moderation(post_text, max_len=1000)
+    # 2. Разбиваем текст по байтам (4000 байт – безопасный лимит)
+    parts = split_text(post_text, max_bytes=4000)
     for i, part in enumerate(parts, 1):
         if i == 1:
             caption = f"📝 Новый пост на проверку (часть 1/{len(parts)}):\n\n{part}"
