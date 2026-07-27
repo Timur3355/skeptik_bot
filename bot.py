@@ -271,13 +271,13 @@ def get_weekly_stats():
     )
     return rows
 
-# ======================== НОВАЯ ЛОГИКА РАЗБИВКИ (600 символов) =========================
+# ======================== НОВАЯ ЛОГИКА РАЗБИВКИ =========================
 def split_into_sentences(text):
     """Разбивает текст на предложения (по . ! ?)"""
     sentences = re.split(r'(?<=[.!?])\s+', text)
     return [s.strip() for s in sentences if s.strip()]
 
-def split_into_parts(text, max_len=600):
+def split_into_parts(text, max_len=800):
     """Группирует предложения в части не длиннее max_len символов."""
     sentences = split_into_sentences(text)
     parts = []
@@ -296,7 +296,7 @@ def split_into_parts(text, max_len=600):
         parts = [text[:max_len] + "..."]
     return parts
 
-# ======================== ГЕНЕРАЦИЯ ПОСТА (увеличен max_tokens) =========================
+# ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
     topic = get_topic_by_analytics()
     print(f"[DEBUG] Выбрана тема: {topic}")
@@ -311,9 +311,9 @@ def generate_post():
                     "Ты — автор канала «Скептик с EBITDA».\n"
                     "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
                     "НЕ выводи <think>, рассуждения — только пост.\n"
-                    "Пост должен быть содержательным, 4–5 абзацев, примерно 600–800 символов.\n"
+                    "Пост должен быть содержательным, 4–6 абзацев, примерно 700–900 символов.\n"
+                    "Обязательно заверши пост Action Item с ✅ и хештегами.\n"
                     "Используй эмодзи в начале абзацев, НЕ используй HTML.\n"
-                    "В конце — Action Item с ✅.\n"
                     "Указывай период и источник (например, Q3 2023).\n"
                     "После Action Item добавь ссылку на источник.\n"
                     "В конце поста добавь 3–5 хештегов, начинающихся с #.\n"
@@ -326,7 +326,7 @@ def generate_post():
             }
         ],
         "temperature": 0.85,
-        "max_tokens": 350  # увеличено, чтобы пост дописывался полностью
+        "max_tokens": 450  # увеличено, чтобы API дописывал пост до конца
     }
 
     for attempt in range(3):
@@ -431,9 +431,9 @@ def clean_text(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
-# ======================== ПУБЛИКАЦИЯ =========================
+# ======================== ПУБЛИКАЦИЯ (НОВАЯ ЛОГИКА) =========================
 def publish_text_only(text):
-    parts = split_into_parts(text, max_len=600)
+    parts = split_into_parts(text, max_len=800)
     for part in parts:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         data = {"chat_id": TELEGRAM_CHAT_ID, "text": part}
@@ -446,7 +446,7 @@ def send_for_approval_no_image(post_text, topic):
     session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
     save_post(session_id, post_text, "", "", topic)
 
-    parts = split_into_parts(post_text, max_len=600)
+    parts = split_into_parts(post_text, max_len=800)
     total = len(parts)
     for i, part in enumerate(parts, 1):
         if total == 1:
@@ -506,8 +506,8 @@ def publish_to_telegram(text, image_path, session_id=None):
             if message_id:
                 execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (message_id, session_id))
 
-    # Отправляем текст, разбивая на части по 600 символов
-    parts = split_into_parts(text, max_len=600)
+    # Отправляем текст, разбивая на предложения (не более 800 символов)
+    parts = split_into_parts(text, max_len=800)
     for i, part in enumerate(parts, 1):
         if len(parts) == 1:
             text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": part}
@@ -540,8 +540,8 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
             print(f"[ERROR] Ошибка отправки фото на модерацию: {resp.text}")
             return False
 
-    # 2. Разбиваем текст на части по 600 символов
-    parts = split_into_parts(post_text, max_len=600)
+    # 2. Разбиваем текст на предложения (не более 800 символов)
+    parts = split_into_parts(post_text, max_len=800)
     total = len(parts)
     for i, part in enumerate(parts, 1):
         if total == 1:
