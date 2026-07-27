@@ -278,8 +278,8 @@ def clean_text(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
-def split_for_moderation(text, max_len=1000):
-    """Разбивает текст на части по max_len символов, не разрывая слова."""
+def split_into_parts(text, max_len=900):
+    """Разбивает текст на части по max_len символов, стараясь не разрывать слова."""
     if len(text) <= max_len:
         return [text]
     parts = []
@@ -424,21 +424,22 @@ def generate_image(prompt, max_attempts=3):
     print("[ERROR] Все попытки генерации картинки провалились")
     return None
 
-# ======================== ПУБЛИКАЦИЯ (ФИНАЛЬНАЯ ВЕРСИЯ – СИМВОЛЬНАЯ РАЗБИВКА) =========================
+# ======================== ПУБЛИКАЦИЯ (НОВАЯ ЛОГИКА) =========================
 def publish_text_only(text):
-    try:
+    parts = split_into_parts(text, max_len=900)
+    for part in parts:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
+        data = {"chat_id": TELEGRAM_CHAT_ID, "text": part}
         resp = requests.post(url, json=data, timeout=30)
-        return resp.status_code == 200
-    except:
-        return False
+        if resp.status_code != 200:
+            return False
+    return True
 
 def send_for_approval_no_image(post_text, topic):
     session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
     save_post(session_id, post_text, "", "", topic)
 
-    parts = split_for_moderation(post_text, max_len=1000)
+    parts = split_into_parts(post_text, max_len=900)
     total = len(parts)
     for i, part in enumerate(parts, 1):
         if total == 1:
@@ -498,8 +499,8 @@ def publish_to_telegram(text, image_path, session_id=None):
             if message_id:
                 execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (message_id, session_id))
 
-    # Отправляем текст, разбивая по 1000 символов
-    parts = split_for_moderation(text, max_len=1000)
+    # Отправляем текст, разбивая на части по 900 символов
+    parts = split_into_parts(text, max_len=900)
     for i, part in enumerate(parts, 1):
         if len(parts) == 1:
             text_data = {
@@ -538,8 +539,8 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
             print(f"[ERROR] Ошибка отправки фото на модерацию: {resp.text}")
             return False
 
-    # 2. Разбиваем текст по 1000 символов
-    parts = split_for_moderation(post_text, max_len=1000)
+    # 2. Отправляем текст, разбивая на части по 900 символов
+    parts = split_into_parts(post_text, max_len=900)
     total = len(parts)
     for i, part in enumerate(parts, 1):
         if total == 1:
