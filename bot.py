@@ -277,7 +277,7 @@ def split_into_sentences(text):
     sentences = re.split(r'(?<=[.!?])\s+', text)
     return [s.strip() for s in sentences if s.strip()]
 
-def split_into_parts(text, max_len=800):
+def split_into_parts(text, max_len=1000):
     """Группирует предложения в части не длиннее max_len символов."""
     sentences = split_into_sentences(text)
     parts = []
@@ -311,12 +311,13 @@ def generate_post():
                     "Ты — автор канала «Скептик с EBITDA».\n"
                     "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
                     "НЕ выводи <think>, рассуждения — только пост.\n"
-                    "Пост должен быть содержательным, 4–6 абзацев, примерно 700–900 символов.\n"
-                    "Обязательно заверши пост Action Item с ✅ и хештегами.\n"
-                    "Используй эмодзи в начале абзацев, НЕ используй HTML.\n"
-                    "Указывай период и источник (например, Q3 2023).\n"
-                    "После Action Item добавь ссылку на источник.\n"
-                    "В конце поста добавь 3–5 хештегов, начинающихся с #.\n"
+                    "Структура поста:\n"
+                    "- Заголовок с эмодзи (например, 🚀).\n"
+                    "- Каждый абзац отделён пустой строкой.\n"
+                    "- Ключевые цифры выделяй жирным с помощью HTML-тегов <b>...</b>.\n"
+                    "- В конце — Action Item с ✅ (тоже отдельно).\n"
+                    "- После Action Item — источник и хештеги (#тег1 #тег2).\n"
+                    "Не используй лишние разделители вроде '---' или '***'.\n"
                     "После текста === и описание картинки (англ., 3–4 слова)."
                 )
             },
@@ -326,7 +327,7 @@ def generate_post():
             }
         ],
         "temperature": 0.85,
-        "max_tokens": 450  # увеличено, чтобы API дописывал пост до конца
+        "max_tokens": 450
     }
 
     for attempt in range(3):
@@ -431,12 +432,12 @@ def clean_text(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
-# ======================== ПУБЛИКАЦИЯ (НОВАЯ ЛОГИКА) =========================
+# ======================== ПУБЛИКАЦИЯ (С parse_mode='HTML') =========================
 def publish_text_only(text):
-    parts = split_into_parts(text, max_len=800)
+    parts = split_into_parts(text, max_len=1000)
     for part in parts:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        data = {"chat_id": TELEGRAM_CHAT_ID, "text": part}
+        data = {"chat_id": TELEGRAM_CHAT_ID, "text": part, "parse_mode": "HTML"}
         resp = requests.post(url, json=data, timeout=30)
         if resp.status_code != 200:
             return False
@@ -446,7 +447,7 @@ def send_for_approval_no_image(post_text, topic):
     session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
     save_post(session_id, post_text, "", "", topic)
 
-    parts = split_into_parts(post_text, max_len=800)
+    parts = split_into_parts(post_text, max_len=1000)
     total = len(parts)
     for i, part in enumerate(parts, 1):
         if total == 1:
@@ -469,6 +470,7 @@ def send_for_approval_no_image(post_text, topic):
         text_data = {
             "chat_id": ADMIN_CHAT_ID,
             "text": caption,
+            "parse_mode": "HTML"
         }
         if reply_markup:
             text_data["reply_markup"] = reply_markup
@@ -506,13 +508,13 @@ def publish_to_telegram(text, image_path, session_id=None):
             if message_id:
                 execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (message_id, session_id))
 
-    # Отправляем текст, разбивая на предложения (не более 800 символов)
-    parts = split_into_parts(text, max_len=800)
+    # Отправляем текст, разбивая на предложения (не более 1000 символов)
+    parts = split_into_parts(text, max_len=1000)
     for i, part in enumerate(parts, 1):
         if len(parts) == 1:
-            text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": part}
+            text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": part, "parse_mode": "HTML"}
         else:
-            text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": f"📝 Пост (часть {i}/{len(parts)}):\n\n{part}"}
+            text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": f"📝 Пост (часть {i}/{len(parts)}):\n\n{part}", "parse_mode": "HTML"}
         resp = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             json=text_data,
@@ -540,8 +542,8 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
             print(f"[ERROR] Ошибка отправки фото на модерацию: {resp.text}")
             return False
 
-    # 2. Разбиваем текст на предложения (не более 800 символов)
-    parts = split_into_parts(post_text, max_len=800)
+    # 2. Разбиваем текст на предложения (не более 1000 символов)
+    parts = split_into_parts(post_text, max_len=1000)
     total = len(parts)
     for i, part in enumerate(parts, 1):
         if total == 1:
@@ -564,6 +566,7 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
         text_data = {
             "chat_id": ADMIN_CHAT_ID,
             "text": caption,
+            "parse_mode": "HTML"
         }
         if reply_markup:
             text_data["reply_markup"] = reply_markup
@@ -588,7 +591,7 @@ def schedule_publish(session_id):
 
 def send_message(chat_id, text):
     try:
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=10)
     except Exception as e:
         print(f"[ERROR] send_message: {e}")
 
