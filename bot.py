@@ -424,7 +424,7 @@ def generate_image(prompt, max_attempts=3):
     print("[ERROR] Все попытки генерации картинки провалились")
     return None
 
-# ======================== ПУБЛИКАЦИЯ (СИМВОЛЬНАЯ РАЗБИВКА) =========================
+# ======================== ПУБЛИКАЦИЯ (ФИНАЛЬНАЯ ВЕРСИЯ – СИМВОЛЬНАЯ РАЗБИВКА) =========================
 def publish_text_only(text):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
