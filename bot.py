@@ -29,6 +29,7 @@ MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-v3")
 
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
+# Запасные темы по дням недели
 DAY_TOPICS = {
     0: "логистические провалы Ozon: затраты, сроки доставки, убытки",
     1: "штрафы и возвраты Wildberries: как компания зарабатывает на продавцах",
@@ -65,12 +66,16 @@ if not MODEL_NAME:
 
 # ======================== RSS И АНАЛИТИКА =========================
 def get_topic_from_news():
+    # Расширенный список RSS-источников для актуальности
     rss_urls = [
         "https://www.rbc.ru/rss/",
         "https://www.kommersant.ru/RSS/news.xml",
-        "https://lenta.ru/rss/news"
+        "https://lenta.ru/rss/news",
+        "https://www.vedomosti.ru/rss/news",
+        "https://www.interfax.ru/rss.asp",
+        "https://www.finmarket.ru/rss/news"
     ]
-    keywords = ["ozon", "wildberries", "магнит", "ритейл", "торговля", "сеть"]
+    keywords = ["ozon", "wildberries", "магнит", "ритейл", "торговля", "сеть", "ebitda", "выручка", "прибыль", "долг", "акции"]
     try:
         for url in rss_urls:
             feed = feedparser.parse(url)
@@ -271,50 +276,74 @@ def get_weekly_stats():
     )
     return rows
 
-# ======================== ФУНКЦИЯ ДЛЯ УЛУЧШЕНИЯ ФОРМАТИРОВАНИЯ =========================
+# ======================== ФОРМАТИРОВАНИЕ =========================
 def beautify_post(text):
     """
-    Принудительно улучшает форматирование поста:
-    - Оборачивает числа и проценты в <b>
-    - Выделяет Action Item (✅) отдельно
-    - Разбивает на абзацы, если их нет
+    Принудительно форматирует пост:
+    - Разбивает на абзацы, если их нет.
+    - Выделяет числа, проценты, валюты жирным.
+    - Выносит Action Item (✅) в отдельный абзац.
     """
-    # 1. Оборачиваем числа (включая проценты) в жирный шрифт, если они не в тегах
-    # Ищем шаблоны: число, пробел, единица (руб, млрд, %), но только если не внутри <b>
-    def replace_numbers(match):
-        number = match.group(0)
-        # Проверяем, не обёрнуто ли уже в <b>
-        if not re.search(r'<b>.*?' + re.escape(number) + r'.*?</b>', text):
-            return f"<b>{number}</b>"
-        return number
+    if not text:
+        return text
+    # Если нет пустых строк, разбиваем по предложениям
+    if '\n\n' not in text:
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        if len(sentences) > 1:
+            paragraphs = []
+            for i in range(0, len(sentences), 2):
+                para = ' '.join(sentences[i:i+2])
+                paragraphs.append(para)
+            text = '\n\n'.join(paragraphs)
 
-    # Паттерн для чисел с валютами и процентами
-    text = re.sub(r'\d+[,.]?\d*\s*(?:млрд|млн|тыс|%|\$|₽|руб|рублей|миллиардов|миллионов)', replace_numbers, text)
+    # Выделяем числа и проценты жирным
+    pattern = r'\b(\d+[.,]?\d*\s*(?:%|₽|\$|руб|млрд|млн|тыс|миллиардов|миллионов|тысяч|штук|единиц)?)\b'
+    def replacer(match):
+        num = match.group(0)
+        if not re.search(r'<b>.*?' + re.escape(num) + r'.*?</b>', text):
+            return f'<b>{num}</b>'
+        return num
+    text = re.sub(pattern, replacer, text)
 
-    # 2. Находим фразу с Action Item (✅) и выделяем её отдельным абзацем
+    # Выделяем Action Item
     action_match = re.search(r'(✅.*?)(?=\n|$)', text, re.DOTALL)
     if action_match:
         action_text = action_match.group(1).strip()
-        # Удаляем из основного текста и добавляем в конце с переносами
         text = text.replace(action_text, '')
-        text = text.strip() + f"\n\n<b>{action_text}</b>"
+        text = text.strip() + f'\n\n<b>{action_text}</b>'
 
-    # 3. Если нет пустых строк между абзацами (более двух переносов), добавляем их
-    # Заменяем одиночные переносы на двойные, если они не внутри маркированного списка
-    lines = text.split('\n')
-    new_lines = []
-    for i, line in enumerate(lines):
-        if line.strip() and not line.strip().startswith('•') and not line.strip().startswith('-'):
-            # Если строка не пустая и не является маркером списка
-            if i > 0 and lines[i-1].strip():
-                # Если предыдущая строка не пустая, добавляем пустую строку
-                new_lines.append('')
-        new_lines.append(line)
-    text = '\n'.join(new_lines)
-
+    # Убираем лишние пустые строки
+    text = re.sub(r'\n{3,}', '\n\n', text)
     return text
 
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
+def clean_text(text):
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+    text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
+    text = re.sub(r'\n\s*\n', '\n\n', text)
+    return text.strip()
+
+def split_into_sentences(text):
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    return [s.strip() for s in sentences if s.strip()]
+
+def split_into_parts(text, max_len=1000):
+    sentences = split_into_sentences(text)
+    parts = []
+    current = ""
+    for sentence in sentences:
+        if len(current) + len(sentence) + 1 <= max_len:
+            current += sentence + " "
+        else:
+            if current:
+                parts.append(current.strip())
+            current = sentence + " "
+    if current:
+        parts.append(current.strip())
+    if not parts:
+        parts = [text[:max_len] + "..."]
+    return parts
+
 def generate_post():
     topic = get_topic_by_analytics()
     print(f"[DEBUG] Выбрана тема: {topic}")
@@ -329,11 +358,14 @@ def generate_post():
                     "Ты — автор канала «Скептик с EBITDA».\n"
                     "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
                     "НЕ выводи <think>, рассуждения — только готовый пост.\n"
+                    "ВАЖНО: используй самые свежие данные из последних доступных отчётов (по возможности за 2025–2026 год).\n"
+                    "Если точных данных нет — указывай период, например, «по данным за последний отчётный период».\n"
+                    "Поищи в своей базе знаний самую актуальную информацию, но не выдумывай цифры.\n"
                     "Структура поста (ОБЯЗАТЕЛЬНО):\n"
                     "1. Заголовок с эмодзи (например, 🚨).\n"
                     "2. Каждый новый смысловой блок начинай с эмодзи (📉, 🏬, 💰, ⚠️).\n"
                     "3. Разделяй абзацы пустой строкой (два переноса).\n"
-                    "4. Ключевые цифры выделяй жирным через <b>...</b> (например, <b>474 млрд</b>).\n"
+                    "4. Ключевые цифры выделяй жирным через <b>...</b>.\n"
                     "5. В конце — чёткий Action Item с ✅ (обязательно отдельно).\n"
                     "6. После Action Item — источник и хештеги (#тег1 #тег2).\n"
                     "7. Не используй разделители вроде '---' или '***'.\n"
@@ -342,7 +374,7 @@ def generate_post():
             },
             {
                 "role": "user",
-                "content": f"Напиши пост на тему: {topic}. Используй реальные цифры из отчётов."
+                "content": f"Напиши пост на тему: {topic}. Используй реальные цифры из отчётов (по возможности последние)."
             }
         ],
         "temperature": 0.85,
@@ -370,7 +402,7 @@ def generate_post():
                 image_prompt = ""
             if len(image_prompt) < 10:
                 image_prompt = "retail comparison illustration, business graph, sarcastic, modern, colorful"
-            # Применяем постобработку для улучшения форматирования
+            # Принудительное форматирование
             post_text = beautify_post(post_text)
             return post_text, image_prompt, topic
         except requests.exceptions.Timeout:
@@ -446,35 +478,7 @@ def generate_image(prompt, max_attempts=3):
     print("[ERROR] Все попытки генерации картинки провалились")
     return None
 
-# ======================== ОСТАЛЬНЫЕ ВСПОМОГАТЕЛЬНЫЕ =========================
-def clean_text(text):
-    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-    text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
-    text = re.sub(r'\n\s*\n', '\n\n', text)
-    return text.strip()
-
-def split_into_sentences(text):
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    return [s.strip() for s in sentences if s.strip()]
-
-def split_into_parts(text, max_len=1000):
-    sentences = split_into_sentences(text)
-    parts = []
-    current = ""
-    for sentence in sentences:
-        if len(current) + len(sentence) + 1 <= max_len:
-            current += sentence + " "
-        else:
-            if current:
-                parts.append(current.strip())
-            current = sentence + " "
-    if current:
-        parts.append(current.strip())
-    if not parts:
-        parts = [text[:max_len] + "..."]
-    return parts
-
-# ======================== ПУБЛИКАЦИЯ (С parse_mode='HTML') =========================
+# ======================== ПУБЛИКАЦИЯ С parse_mode='HTML' =========================
 def publish_text_only(text):
     parts = split_into_parts(text, max_len=1000)
     for part in parts:
