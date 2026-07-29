@@ -29,7 +29,6 @@ MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-v3")
 
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
-# Запасные темы по дням недели
 DAY_TOPICS = {
     0: "логистические провалы Ozon: затраты, сроки доставки, убытки",
     1: "штрафы и возвраты Wildberries: как компания зарабатывает на продавцах",
@@ -66,16 +65,12 @@ if not MODEL_NAME:
 
 # ======================== RSS И АНАЛИТИКА =========================
 def get_topic_from_news():
-    # Расширенный список RSS-источников для актуальности
     rss_urls = [
         "https://www.rbc.ru/rss/",
         "https://www.kommersant.ru/RSS/news.xml",
-        "https://lenta.ru/rss/news",
-        "https://www.vedomosti.ru/rss/news",
-        "https://www.interfax.ru/rss.asp",
-        "https://www.finmarket.ru/rss/news"
+        "https://lenta.ru/rss/news"
     ]
-    keywords = ["ozon", "wildberries", "магнит", "ритейл", "торговля", "сеть", "ebitda", "выручка", "прибыль", "долг", "акции"]
+    keywords = ["ozon", "wildberries", "магнит", "ритейл", "торговля", "нефть", "лукойл", "lukoil"]
     try:
         for url in rss_urls:
             feed = feedparser.parse(url)
@@ -276,74 +271,72 @@ def get_weekly_stats():
     )
     return rows
 
-# ======================== ФОРМАТИРОВАНИЕ =========================
+# ======================== УЛУЧШЕННАЯ ПОСТОБРАБОТКА =========================
 def beautify_post(text):
     """
-    Принудительно форматирует пост:
-    - Разбивает на абзацы, если их нет.
+    Принудительное форматирование поста:
+    - Разбивает на абзацы по предложениям (не разрывает сокращения).
     - Выделяет числа, проценты, валюты жирным.
-    - Выносит Action Item (✅) в отдельный абзац.
+    - Отделяет Action Item (✅) в отдельный абзац.
+    - Убирает лишние пробелы и переносы.
     """
-    if not text:
-        return text
-    # Если нет пустых строк, разбиваем по предложениям
-    if '\n\n' not in text:
-        sentences = re.split(r'(?<=[.!?])\s+', text)
-        if len(sentences) > 1:
-            paragraphs = []
-            for i in range(0, len(sentences), 2):
-                para = ' '.join(sentences[i:i+2])
-                paragraphs.append(para)
-            text = '\n\n'.join(paragraphs)
+    # 0. Убираем лишние пробелы и переносы
+    text = re.sub(r'\s+', ' ', text).strip()
 
-    # Выделяем числа и проценты жирным
-    pattern = r'\b(\d+[.,]?\d*\s*(?:%|₽|\$|руб|млрд|млн|тыс|миллиардов|миллионов|тысяч|штук|единиц)?)\b'
+    # 1. Извлекаем Action Item (ищем ✅ или "Action Item")
+    action_text = ""
+    action_match = re.search(r'(✅.*?)(?=\s*[A-Z#]|$)', text, re.DOTALL)
+    if action_match:
+        action_text = action_match.group(1).strip()
+        text = text.replace(action_text, '').strip()
+    else:
+        # Если нет ✅, ищем "Action Item"
+        action_match = re.search(r'(Action Item:.*?)(?=\s*[A-Z#]|$)', text, re.DOTALL)
+        if action_match:
+            action_text = "✅ " + action_match.group(1).strip()
+            text = text.replace(action_match.group(1), '').strip()
+
+    # 2. Разбиваем на абзацы по предложениям
+    # Игнорируем точки в сокращениях (млрд., руб., и т.д.)
+    sentences = re.split(r'(?<=[.!?])\s+(?=[A-ZА-Я0-9])', text)
+    if len(sentences) > 1:
+        # Группируем по 2 предложения в абзац
+        paragraphs = []
+        for i in range(0, len(sentences), 2):
+            para = ' '.join(sentences[i:i+2])
+            paragraphs.append(para)
+        text = '\n\n'.join(paragraphs)
+    else:
+        # Если одно предложение – оставляем как есть
+        text = text
+
+    # 3. Выделяем числа, проценты и валюты жирным
+    # Паттерн: цифры с плавающей точкой, с единицами измерения
+    number_pattern = r'\b(\d+[.,]?\d*\s*(?:%|₽|\$|руб|млрд|млн|тыс|миллиардов|миллионов|тысяч|штук|единиц)?)\b'
     def replacer(match):
         num = match.group(0)
+        # Проверяем, не обёрнуто ли уже в <b>
         if not re.search(r'<b>.*?' + re.escape(num) + r'.*?</b>', text):
             return f'<b>{num}</b>'
         return num
-    text = re.sub(pattern, replacer, text)
+    text = re.sub(number_pattern, replacer, text)
 
-    # Выделяем Action Item
-    action_match = re.search(r'(✅.*?)(?=\n|$)', text, re.DOTALL)
-    if action_match:
-        action_text = action_match.group(1).strip()
-        text = text.replace(action_text, '')
-        text = text.strip() + f'\n\n<b>{action_text}</b>'
+    # 4. Добавляем Action Item обратно
+    if action_text:
+        # Если в тексте уже есть хештеги, добавляем после них
+        hashtag_match = re.search(r'(#\w+(?:\s*#\w+)*)$', text)
+        if hashtag_match:
+            hashtags = hashtag_match.group(1)
+            text = text.replace(hashtags, '').strip()
+            text = text + f'\n\n<b>{action_text}</b>\n\n{hashtags}'
+        else:
+            text = text + f'\n\n<b>{action_text}</b>'
 
-    # Убираем лишние пустые строки
+    # 5. Убираем повторяющиеся пустые строки
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text
 
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
-def clean_text(text):
-    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-    text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
-    text = re.sub(r'\n\s*\n', '\n\n', text)
-    return text.strip()
-
-def split_into_sentences(text):
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    return [s.strip() for s in sentences if s.strip()]
-
-def split_into_parts(text, max_len=1000):
-    sentences = split_into_sentences(text)
-    parts = []
-    current = ""
-    for sentence in sentences:
-        if len(current) + len(sentence) + 1 <= max_len:
-            current += sentence + " "
-        else:
-            if current:
-                parts.append(current.strip())
-            current = sentence + " "
-    if current:
-        parts.append(current.strip())
-    if not parts:
-        parts = [text[:max_len] + "..."]
-    return parts
-
 def generate_post():
     topic = get_topic_by_analytics()
     print(f"[DEBUG] Выбрана тема: {topic}")
@@ -358,14 +351,12 @@ def generate_post():
                     "Ты — автор канала «Скептик с EBITDA».\n"
                     "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
                     "НЕ выводи <think>, рассуждения — только готовый пост.\n"
-                    "ВАЖНО: используй самые свежие данные из последних доступных отчётов (по возможности за 2025–2026 год).\n"
-                    "Если точных данных нет — указывай период, например, «по данным за последний отчётный период».\n"
-                    "Поищи в своей базе знаний самую актуальную информацию, но не выдумывай цифры.\n"
+                    "ВАЖНО: Используй только актуальные данные из последних отчётов (2023–2026 год).\n"
                     "Структура поста (ОБЯЗАТЕЛЬНО):\n"
                     "1. Заголовок с эмодзи (например, 🚨).\n"
                     "2. Каждый новый смысловой блок начинай с эмодзи (📉, 🏬, 💰, ⚠️).\n"
-                    "3. Разделяй абзацы пустой строкой (два переноса).\n"
-                    "4. Ключевые цифры выделяй жирным через <b>...</b>.\n"
+                    "3. Между абзацами ставь ДВОЙНОЙ ПЕРЕНОС (пустую строку).\n"
+                    "4. Ключевые цифры выделяй жирным через <b>...</b> (например, <b>10,4%</b>).\n"
                     "5. В конце — чёткий Action Item с ✅ (обязательно отдельно).\n"
                     "6. После Action Item — источник и хештеги (#тег1 #тег2).\n"
                     "7. Не используй разделители вроде '---' или '***'.\n"
@@ -374,11 +365,11 @@ def generate_post():
             },
             {
                 "role": "user",
-                "content": f"Напиши пост на тему: {topic}. Используй реальные цифры из отчётов (по возможности последние)."
+                "content": f"Напиши пост на тему: {topic}. Используй реальные цифры из отчётов."
             }
         ],
         "temperature": 0.85,
-        "max_tokens": 500
+        "max_tokens": 550
     }
 
     for attempt in range(3):
@@ -402,7 +393,7 @@ def generate_post():
                 image_prompt = ""
             if len(image_prompt) < 10:
                 image_prompt = "retail comparison illustration, business graph, sarcastic, modern, colorful"
-            # Принудительное форматирование
+            # Применяем усиленную постобработку
             post_text = beautify_post(post_text)
             return post_text, image_prompt, topic
         except requests.exceptions.Timeout:
@@ -478,7 +469,35 @@ def generate_image(prompt, max_attempts=3):
     print("[ERROR] Все попытки генерации картинки провалились")
     return None
 
-# ======================== ПУБЛИКАЦИЯ С parse_mode='HTML' =========================
+# ======================== ОСТАЛЬНЫЕ ВСПОМОГАТЕЛЬНЫЕ =========================
+def clean_text(text):
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+    text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
+    text = re.sub(r'\n\s*\n', '\n\n', text)
+    return text.strip()
+
+def split_into_sentences(text):
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    return [s.strip() for s in sentences if s.strip()]
+
+def split_into_parts(text, max_len=1000):
+    sentences = split_into_sentences(text)
+    parts = []
+    current = ""
+    for sentence in sentences:
+        if len(current) + len(sentence) + 1 <= max_len:
+            current += sentence + " "
+        else:
+            if current:
+                parts.append(current.strip())
+            current = sentence + " "
+    if current:
+        parts.append(current.strip())
+    if not parts:
+        parts = [text[:max_len] + "..."]
+    return parts
+
+# ======================== ПУБЛИКАЦИЯ (С parse_mode='HTML') =========================
 def publish_text_only(text):
     parts = split_into_parts(text, max_len=1000)
     for part in parts:
