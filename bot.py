@@ -271,57 +271,46 @@ def get_weekly_stats():
     )
     return rows
 
-# ======================== ВСПОМОГАТЕЛЬНЫЕ =========================
-def clean_text(text):
-    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-    text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
-    text = re.sub(r'\n\s*\n', '\n\n', text)
-    return text.strip()
-
-def split_into_sentences(text):
-    """Разбивает текст на предложения (по . ! ?)"""
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    return [s.strip() for s in sentences if s.strip()]
-
-def split_into_parts(text, max_len=1000):
-    """Группирует предложения в части не длиннее max_len символов."""
-    sentences = split_into_sentences(text)
-    parts = []
-    current = ""
-    for sentence in sentences:
-        if len(current) + len(sentence) + 1 <= max_len:
-            current += sentence + " "
-        else:
-            if current:
-                parts.append(current.strip())
-            current = sentence + " "
-    if current:
-        parts.append(current.strip())
-    if not parts:
-        parts = [text[:max_len] + "..."]
-    return parts
-
-def format_post_text(text):
+# ======================== ФУНКЦИЯ ДЛЯ УЛУЧШЕНИЯ ФОРМАТИРОВАНИЯ =========================
+def beautify_post(text):
     """
-    Пост-обработка: если нет <b>, оборачиваем все цифры в жирный шрифт.
-    Также выделяет Action Item отдельным абзацем.
+    Принудительно улучшает форматирование поста:
+    - Оборачивает числа и проценты в <b>
+    - Выделяет Action Item (✅) отдельно
+    - Разбивает на абзацы, если их нет
     """
-    # Если текст уже содержит <b>, не трогаем
-    if '<b>' in text:
-        return text
+    # 1. Оборачиваем числа (включая проценты) в жирный шрифт, если они не в тегах
+    # Ищем шаблоны: число, пробел, единица (руб, млрд, %), но только если не внутри <b>
+    def replace_numbers(match):
+        number = match.group(0)
+        # Проверяем, не обёрнуто ли уже в <b>
+        if not re.search(r'<b>.*?' + re.escape(number) + r'.*?</b>', text):
+            return f"<b>{number}</b>"
+        return number
 
-    # Оборачиваем все числа (включая десятичные и с пробелами) в <b>
-    # Ищем числа вида: 123, 123.45, 123 456, 123,456
-    text = re.sub(r'(\d{1,3}(?:[.,\s]?\d{3})*(?:\.\d+)?)', r'<b>\1</b>', text)
+    # Паттерн для чисел с валютами и процентами
+    text = re.sub(r'\d+[,.]?\d*\s*(?:млрд|млн|тыс|%|\$|₽|руб|рублей|миллиардов|миллионов)', replace_numbers, text)
 
-    # Если есть "Action Item", но без жирного – выделяем
-    # Ищем строки, начинающиеся с ✅ или содержащие "Action Item"
+    # 2. Находим фразу с Action Item (✅) и выделяем её отдельным абзацем
+    action_match = re.search(r'(✅.*?)(?=\n|$)', text, re.DOTALL)
+    if action_match:
+        action_text = action_match.group(1).strip()
+        # Удаляем из основного текста и добавляем в конце с переносами
+        text = text.replace(action_text, '')
+        text = text.strip() + f"\n\n<b>{action_text}</b>"
+
+    # 3. Если нет пустых строк между абзацами (более двух переносов), добавляем их
+    # Заменяем одиночные переносы на двойные, если они не внутри маркированного списка
     lines = text.split('\n')
+    new_lines = []
     for i, line in enumerate(lines):
-        if '✅' in line or 'Action Item' in line:
-            if not line.strip().startswith('<b>'):
-                lines[i] = f'<b>{line.strip()}</b>'
-    text = '\n'.join(lines)
+        if line.strip() and not line.strip().startswith('•') and not line.strip().startswith('-'):
+            # Если строка не пустая и не является маркером списка
+            if i > 0 and lines[i-1].strip():
+                # Если предыдущая строка не пустая, добавляем пустую строку
+                new_lines.append('')
+        new_lines.append(line)
+    text = '\n'.join(new_lines)
 
     return text
 
@@ -341,12 +330,13 @@ def generate_post():
                     "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
                     "НЕ выводи <think>, рассуждения — только готовый пост.\n"
                     "Структура поста (ОБЯЗАТЕЛЬНО):\n"
-                    "1. Заголовок с эмодзи (например, 💸).\n"
-                    "2. Каждый смысловой блок начинай с эмодзи (📊, 🏦, 📈, 🔥, ⚠️).\n"
-                    "3. Ключевые цифры выделяй жирным через <b>...</b>.\n"
-                    "4. Action Item должен быть ОТДЕЛЬНЫМ абзацем, начинаться с ✅ и быть жирным.\n"
-                    "5. После Action Item — источник и хештеги (#тег1 #тег2).\n"
-                    "6. Не используй разделители (---, ***). Только пустые строки.\n"
+                    "1. Заголовок с эмодзи (например, 🚨).\n"
+                    "2. Каждый новый смысловой блок начинай с эмодзи (📉, 🏬, 💰, ⚠️).\n"
+                    "3. Разделяй абзацы пустой строкой (два переноса).\n"
+                    "4. Ключевые цифры выделяй жирным через <b>...</b> (например, <b>474 млрд</b>).\n"
+                    "5. В конце — чёткий Action Item с ✅ (обязательно отдельно).\n"
+                    "6. После Action Item — источник и хештеги (#тег1 #тег2).\n"
+                    "7. Не используй разделители вроде '---' или '***'.\n"
                     "После текста === и описание картинки (англ., 3–4 слова)."
                 )
             },
@@ -356,7 +346,7 @@ def generate_post():
             }
         ],
         "temperature": 0.85,
-        "max_tokens": 450
+        "max_tokens": 500
     }
 
     for attempt in range(3):
@@ -380,8 +370,8 @@ def generate_post():
                 image_prompt = ""
             if len(image_prompt) < 10:
                 image_prompt = "retail comparison illustration, business graph, sarcastic, modern, colorful"
-            # Пост-обработка
-            post_text = format_post_text(post_text)
+            # Применяем постобработку для улучшения форматирования
+            post_text = beautify_post(post_text)
             return post_text, image_prompt, topic
         except requests.exceptions.Timeout:
             print(f"[WARN] Попытка {attempt+1} таймаут")
@@ -456,7 +446,35 @@ def generate_image(prompt, max_attempts=3):
     print("[ERROR] Все попытки генерации картинки провалились")
     return None
 
-# ======================== ПУБЛИКАЦИЯ =========================
+# ======================== ОСТАЛЬНЫЕ ВСПОМОГАТЕЛЬНЫЕ =========================
+def clean_text(text):
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+    text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
+    text = re.sub(r'\n\s*\n', '\n\n', text)
+    return text.strip()
+
+def split_into_sentences(text):
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    return [s.strip() for s in sentences if s.strip()]
+
+def split_into_parts(text, max_len=1000):
+    sentences = split_into_sentences(text)
+    parts = []
+    current = ""
+    for sentence in sentences:
+        if len(current) + len(sentence) + 1 <= max_len:
+            current += sentence + " "
+        else:
+            if current:
+                parts.append(current.strip())
+            current = sentence + " "
+    if current:
+        parts.append(current.strip())
+    if not parts:
+        parts = [text[:max_len] + "..."]
+    return parts
+
+# ======================== ПУБЛИКАЦИЯ (С parse_mode='HTML') =========================
 def publish_text_only(text):
     parts = split_into_parts(text, max_len=1000)
     for part in parts:
