@@ -271,7 +271,13 @@ def get_weekly_stats():
     )
     return rows
 
-# ======================== НОВАЯ ЛОГИКА РАЗБИВКИ =========================
+# ======================== ВСПОМОГАТЕЛЬНЫЕ =========================
+def clean_text(text):
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+    text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
+    text = re.sub(r'\n\s*\n', '\n\n', text)
+    return text.strip()
+
 def split_into_sentences(text):
     """Разбивает текст на предложения (по . ! ?)"""
     sentences = re.split(r'(?<=[.!?])\s+', text)
@@ -291,10 +297,33 @@ def split_into_parts(text, max_len=1000):
             current = sentence + " "
     if current:
         parts.append(current.strip())
-    # Если не получилось разбить (одно предложение слишком длинное), режем принудительно
     if not parts:
         parts = [text[:max_len] + "..."]
     return parts
+
+def format_post_text(text):
+    """
+    Пост-обработка: если нет <b>, оборачиваем все цифры в жирный шрифт.
+    Также выделяет Action Item отдельным абзацем.
+    """
+    # Если текст уже содержит <b>, не трогаем
+    if '<b>' in text:
+        return text
+
+    # Оборачиваем все числа (включая десятичные и с пробелами) в <b>
+    # Ищем числа вида: 123, 123.45, 123 456, 123,456
+    text = re.sub(r'(\d{1,3}(?:[.,\s]?\d{3})*(?:\.\d+)?)', r'<b>\1</b>', text)
+
+    # Если есть "Action Item", но без жирного – выделяем
+    # Ищем строки, начинающиеся с ✅ или содержащие "Action Item"
+    lines = text.split('\n')
+    for i, line in enumerate(lines):
+        if '✅' in line or 'Action Item' in line:
+            if not line.strip().startswith('<b>'):
+                lines[i] = f'<b>{line.strip()}</b>'
+    text = '\n'.join(lines)
+
+    return text
 
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
@@ -313,12 +342,11 @@ def generate_post():
                     "НЕ выводи <think>, рассуждения — только готовый пост.\n"
                     "Структура поста (ОБЯЗАТЕЛЬНО):\n"
                     "1. Заголовок с эмодзи (например, 💸).\n"
-                    "2. Разбивай информацию на смысловые блоки, каждый начинай с эмодзи (📊, 🏦, 📈, 🔥, ⚠️).\n"
+                    "2. Каждый смысловой блок начинай с эмодзи (📊, 🏦, 📈, 🔥, ⚠️).\n"
                     "3. Ключевые цифры выделяй жирным через <b>...</b>.\n"
-                    "4. Используй маркированные списки с • для перечисления цифр.\n"
-                    "5. В конце — яркий Action Item с ✅, выделенный отдельно.\n"
-                    "6. После Action Item — источник и хештеги (#тег1 #тег2).\n"
-                    "7. НЕ используй разделители (---, ***). Только пустые строки между блоками.\n"
+                    "4. Action Item должен быть ОТДЕЛЬНЫМ абзацем, начинаться с ✅ и быть жирным.\n"
+                    "5. После Action Item — источник и хештеги (#тег1 #тег2).\n"
+                    "6. Не используй разделители (---, ***). Только пустые строки.\n"
                     "После текста === и описание картинки (англ., 3–4 слова)."
                 )
             },
@@ -352,6 +380,8 @@ def generate_post():
                 image_prompt = ""
             if len(image_prompt) < 10:
                 image_prompt = "retail comparison illustration, business graph, sarcastic, modern, colorful"
+            # Пост-обработка
+            post_text = format_post_text(post_text)
             return post_text, image_prompt, topic
         except requests.exceptions.Timeout:
             print(f"[WARN] Попытка {attempt+1} таймаут")
@@ -426,14 +456,7 @@ def generate_image(prompt, max_attempts=3):
     print("[ERROR] Все попытки генерации картинки провалились")
     return None
 
-# ======================== ОСТАЛЬНЫЕ ВСПОМОГАТЕЛЬНЫЕ =========================
-def clean_text(text):
-    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-    text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
-    text = re.sub(r'\n\s*\n', '\n\n', text)
-    return text.strip()
-
-# ======================== ПУБЛИКАЦИЯ (С parse_mode='HTML') =========================
+# ======================== ПУБЛИКАЦИЯ =========================
 def publish_text_only(text):
     parts = split_into_parts(text, max_len=1000)
     for part in parts:
@@ -490,7 +513,6 @@ def publish_to_telegram(text, image_path, session_id=None):
     if not os.path.exists(image_path):
         return False
 
-    # Отправляем фото без подписи
     with open(image_path, "rb") as photo:
         files = {"photo": photo}
         data = {"chat_id": TELEGRAM_CHAT_ID}
@@ -509,7 +531,6 @@ def publish_to_telegram(text, image_path, session_id=None):
             if message_id:
                 execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (message_id, session_id))
 
-    # Отправляем текст, разбивая на предложения (не более 1000 символов)
     parts = split_into_parts(text, max_len=1000)
     for i, part in enumerate(parts, 1):
         if len(parts) == 1:
@@ -529,7 +550,6 @@ def publish_to_telegram(text, image_path, session_id=None):
 def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
     save_post(session_id, post_text, image_path, image_prompt, topic)
 
-    # 1. Отправляем фото без подписи
     with open(image_path, "rb") as photo:
         files = {"photo": photo}
         data = {"chat_id": ADMIN_CHAT_ID}
@@ -543,7 +563,6 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
             print(f"[ERROR] Ошибка отправки фото на модерацию: {resp.text}")
             return False
 
-    # 2. Разбиваем текст на предложения (не более 1000 символов)
     parts = split_into_parts(post_text, max_len=1000)
     total = len(parts)
     for i, part in enumerate(parts, 1):
@@ -608,21 +627,7 @@ def check_and_repost():
             execute_query('UPDATE posts SET reposted = TRUE WHERE session_id = ?', (row['session_id'],))
             print(f"[DEBUG] Повторно опубликован пост {row['session_id']}")
 
-def weekly_report():
-    """Еженедельный отчёт с логированием"""
-    print(f"[DEBUG] weekly_report вызван в {datetime.now()}")
-    send_message(ADMIN_CHAT_ID, "📊 Еженедельный отчёт начат...")
-    stats = get_weekly_stats()
-    if stats:
-        msg = f"📊 Еженедельный отчёт:\nОдобрено: {stats['published']}\nОтклонено: {stats['rejected']}\nВсего создано: {stats['total']}"
-    else:
-        msg = "📊 Недостаточно данных."
-    send_message(ADMIN_CHAT_ID, msg)
-
 def digest_job():
-    """Дайджест лучших постов с логированием"""
-    print(f"[DEBUG] digest_job вызван в {datetime.now()}")
-    send_message(ADMIN_CHAT_ID, "📅 Дайджест лучших постов начат...")
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
         'SELECT text, rating, message_id, views, reactions FROM posts WHERE status = \'published\' AND published_at >= ? ORDER BY rating DESC LIMIT 5',
@@ -651,6 +656,14 @@ def digest_job():
                 pass
         digest += f"{i}. {short_text}\n   👁 {views} просмотров, ❤️ {reactions} реакций\n\n"
     requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": digest, "parse_mode": "Markdown"}, timeout=30)
+
+def weekly_report():
+    stats = get_weekly_stats()
+    if stats:
+        msg = f"📊 Еженедельный отчёт:\nОдобрено: {stats['published']}\nОтклонено: {stats['rejected']}\nВсего создано: {stats['total']}"
+    else:
+        msg = "📊 Недостаточно данных."
+    send_message(ADMIN_CHAT_ID, msg)
 
 # ======================== ОБРАБОТЧИК КНОПОК =========================
 edit_mode = {}
@@ -887,15 +900,14 @@ threading.Thread(target=keep_alive, daemon=True).start()
 threading.Thread(target=poll_updates, daemon=True).start()
 
 # ======================== РАСПИСАНИЕ =========================
-schedule.every().day.at("15:00").do(lambda: job(auto_publish=False))  # 18:00 МСК – модерация
-schedule.every().day.at("07:00").do(publish_scheduled_posts)          # 10:00 МСК – публикация
-schedule.every().sunday.at("15:00").do(weekly_report)                # 18:00 МСК – отчёт
-schedule.every().sunday.at("15:00").do(digest_job)                   # 18:00 МСК – дайджест
+schedule.every().day.at("15:00").do(lambda: job(auto_publish=False))  # 18:00 МСК
+schedule.every().day.at("07:00").do(publish_scheduled_posts)          # 10:00 МСК
+schedule.every().sunday.at("17:00").do(weekly_report)
+schedule.every().sunday.at("17:00").do(digest_job)
 
 print("Бот запущен. Ожидание расписания...")
 print(f"Провайдер: {API_PROVIDER}, Модель: {MODEL_NAME}")
 print("Модерация каждый день в 18:00 МСК, публикация в 10:00 МСК.")
-print("Отчёты по воскресеньям в 18:00 МСК.")
 
 while True:
     schedule.run_pending()
