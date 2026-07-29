@@ -312,12 +312,13 @@ def generate_post():
                     "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
                     "НЕ выводи <think>, рассуждения — только готовый пост.\n"
                     "Структура поста (ОБЯЗАТЕЛЬНО):\n"
-                    "1. Заголовок с эмодзи (например, 🚀).\n"
-                    "2. Каждый абзац отделён пустой строкой (два переноса).\n"
-                    "3. Ключевые цифры выделяй жирным с помощью HTML-тегов <b>...</b>.\n"
-                    "4. В конце — Action Item с ✅, отдельно.\n"
-                    "5. После Action Item — источник и хештеги (#тег1 #тег2).\n"
-                    "Не используй лишние разделители вроде '---' или '***'.\n"
+                    "1. Заголовок с эмодзи (например, 💸).\n"
+                    "2. Разбивай информацию на смысловые блоки, каждый начинай с эмодзи (📊, 🏦, 📈, 🔥, ⚠️).\n"
+                    "3. Ключевые цифры выделяй жирным через <b>...</b>.\n"
+                    "4. Используй маркированные списки с • для перечисления цифр.\n"
+                    "5. В конце — яркий Action Item с ✅, выделенный отдельно.\n"
+                    "6. После Action Item — источник и хештеги (#тег1 #тег2).\n"
+                    "7. НЕ используй разделители (---, ***). Только пустые строки между блоками.\n"
                     "После текста === и описание картинки (англ., 3–4 слова)."
                 )
             },
@@ -607,7 +608,21 @@ def check_and_repost():
             execute_query('UPDATE posts SET reposted = TRUE WHERE session_id = ?', (row['session_id'],))
             print(f"[DEBUG] Повторно опубликован пост {row['session_id']}")
 
+def weekly_report():
+    """Еженедельный отчёт с логированием"""
+    print(f"[DEBUG] weekly_report вызван в {datetime.now()}")
+    send_message(ADMIN_CHAT_ID, "📊 Еженедельный отчёт начат...")
+    stats = get_weekly_stats()
+    if stats:
+        msg = f"📊 Еженедельный отчёт:\nОдобрено: {stats['published']}\nОтклонено: {stats['rejected']}\nВсего создано: {stats['total']}"
+    else:
+        msg = "📊 Недостаточно данных."
+    send_message(ADMIN_CHAT_ID, msg)
+
 def digest_job():
+    """Дайджест лучших постов с логированием"""
+    print(f"[DEBUG] digest_job вызван в {datetime.now()}")
+    send_message(ADMIN_CHAT_ID, "📅 Дайджест лучших постов начат...")
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
         'SELECT text, rating, message_id, views, reactions FROM posts WHERE status = \'published\' AND published_at >= ? ORDER BY rating DESC LIMIT 5',
@@ -765,15 +780,6 @@ def publish_scheduled_posts():
             else:
                 print(f"[{datetime.now()}] ❌ Ошибка публикации {p['session_id']}")
 
-# ======================== ОТЧЁТЫ =========================
-def weekly_report():
-    stats = get_weekly_stats()
-    if stats:
-        msg = f"📊 Еженедельный отчёт:\nОдобрено: {stats['published']}\nОтклонено: {stats['rejected']}\nВсего создано: {stats['total']}"
-    else:
-        msg = "📊 Недостаточно данных."
-    send_message(ADMIN_CHAT_ID, msg)
-
 # ======================== ОСНОВНАЯ ЗАДАЧА =========================
 def job(auto_publish=False):
     print(f"[DEBUG] job started at {datetime.now()}")
@@ -881,14 +887,15 @@ threading.Thread(target=keep_alive, daemon=True).start()
 threading.Thread(target=poll_updates, daemon=True).start()
 
 # ======================== РАСПИСАНИЕ =========================
-schedule.every().day.at("15:00").do(lambda: job(auto_publish=False))  # 18:00 МСК
-schedule.every().day.at("07:00").do(publish_scheduled_posts)          # 10:00 МСК
-schedule.every().sunday.at("17:00").do(weekly_report)
-schedule.every().sunday.at("17:00").do(digest_job)
+schedule.every().day.at("15:00").do(lambda: job(auto_publish=False))  # 18:00 МСК – модерация
+schedule.every().day.at("07:00").do(publish_scheduled_posts)          # 10:00 МСК – публикация
+schedule.every().sunday.at("15:00").do(weekly_report)                # 18:00 МСК – отчёт
+schedule.every().sunday.at("15:00").do(digest_job)                   # 18:00 МСК – дайджест
 
 print("Бот запущен. Ожидание расписания...")
 print(f"Провайдер: {API_PROVIDER}, Модель: {MODEL_NAME}")
 print("Модерация каждый день в 18:00 МСК, публикация в 10:00 МСК.")
+print("Отчёты по воскресеньям в 18:00 МСК.")
 
 while True:
     schedule.run_pending()
