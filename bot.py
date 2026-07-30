@@ -355,7 +355,6 @@ def init_db():
                 FOREIGN KEY(post_id) REFERENCES posts(id)
             )
         ''')
-        default_prompt = "..."  # тот же текст, что выше
         cur.execute('''
             INSERT OR IGNORE INTO prompts (name, content) VALUES (?, ?)
         ''', ('system_prompt', default_prompt))
@@ -752,7 +751,7 @@ def schedule_publish(session_id):
     update_post_status(session_id, 'approved', scheduled_time=publish_time)
     send_message(ADMIN_CHAT_ID, f"✅ Пост одобрен и запланирован на {publish_time.strftime('%d.%m.%Y %H:%M')} МСК.")
 
-# ======================== ОБРАБОТЧИК КОМАНД АДМИНА (4.1) =========================
+# ======================== ОБРАБОТЧИК КОМАНД АДМИНА =========================
 def handle_admin_command(text, chat_id):
     if text.startswith('/stats'):
         rows = execute_query(
@@ -1006,15 +1005,6 @@ def publish_scheduled_posts():
             else:
                 print(f"[{datetime.now()}] ❌ Ошибка публикации {p['session_id']}")
 
-# ======================== РАСПИСАНИЕ =========================
-schedule.every().day.at("15:00").do(lambda: job(auto_publish=False))
-schedule.every().day.at("07:00").do(publish_scheduled_posts)
-schedule.every().sunday.at("17:00").do(weekly_report)
-schedule.every().day.at("03:00").do(backup_db)
-schedule.every().sunday.at("20:00").do(collect_questions)
-schedule.every().wednesday.at("10:00").do(publish_answers)
-schedule.every().hour.do(update_stats)
-
 # ======================== ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ =========================
 def weekly_report():
     stats = execute_query(
@@ -1088,7 +1078,16 @@ def keep_alive():
 threading.Thread(target=keep_alive, daemon=True).start()
 threading.Thread(target=poll_updates, daemon=True).start()
 
-# ======================== ЗАПУСК =========================
+# ======================== РАСПИСАНИЕ И ЗАПУСК =========================
+# Все расписания – после определения всех функций
+schedule.every().day.at("15:00").do(lambda: job(auto_publish=False))  # 18:00 МСК
+schedule.every().day.at("07:00").do(publish_scheduled_posts)          # 10:00 МСК
+schedule.every().sunday.at("17:00").do(weekly_report)
+schedule.every().day.at("03:00").do(backup_db)
+schedule.every().sunday.at("20:00").do(collect_questions)
+schedule.every().wednesday.at("10:00").do(publish_answers)
+schedule.every().hour.do(update_stats)
+
 print("Бот запущен. Ожидание расписания...")
 print(f"Провайдер: {API_PROVIDER}, Модель: {MODEL_NAME}")
 print("Модерация каждый день в 18:00 МСК, публикация в 10:00 МСК.")
