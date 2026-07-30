@@ -9,4 +9,8 @@ alpha_vantage
 matplotlib
 flask
 scikit-learn
-psycopg2-binary
+
+
+
+
+

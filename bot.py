@@ -16,8 +16,6 @@ import re
 import pytz
 import feedparser
 from PIL import Image
-import sqlite3
-from contextlib import closing
 
 # ======================== ИМПОРТ МОДУЛЕЙ (ЕСЛИ ОНИ ЕСТЬ) =========================
 try:
@@ -122,13 +120,12 @@ API_DEFAULT_MODEL = config["default_model"]
 if not MODEL_NAME:
     MODEL_NAME = API_DEFAULT_MODEL
 
-# ======================== 1.1 ФИНАНСОВЫЕ API (ЧЕРЕЗ МОДУЛЬ) =========================
+# ======================== УЛУЧШЕНИЯ (FALLBACK) =========================
 def get_financial_data(symbol="OZON"):
     if financial_api:
         return financial_api.get_financial_data(symbol)
     return None
 
-# ======================== 1.2 ВЫБОР ФОРМАТА ПОСТА =========================
 def select_format():
     if format_selector:
         return format_selector.select_format()
@@ -136,22 +133,16 @@ def select_format():
     formats = ["мем", "новость", "аналитика", "мем", "аналитика", "новость", "мем"]
     return formats[weekday % len(formats)]
 
-# ======================== 1.3 ТРЕНДЫ GOOGLE (ЧЕРЕЗ МОДУЛЬ) =========================
 def get_trending_topic():
     if trends:
         return trends.get_trending_topic()
     return None
 
-# ======================== 1.4 ИНФОГРАФИКА (ЧЕРЕЗ МОДУЛЬ) =========================
 def create_infographic(data, labels, title="Ключевые показатели"):
     if image_enhancer:
         return image_enhancer.create_infographic(data, labels, title)
     return None
 
-# ======================== 1.5 ЦИТАТЫ И 1.6 СТРУКТУРА (В ПРОМПТЕ) =========================
-# Уже встроены в системный промпт через БД
-
-# ======================== 2.2 ЕЖЕНЕДЕЛЬНЫЙ «ЧАС ВОПРОСОВ» (ЧЕРЕЗ МОДУЛЬ) =========================
 def collect_questions():
     if qa_collector:
         return qa_collector.collect_questions()
@@ -162,11 +153,9 @@ def publish_answers():
         return qa_collector.publish_answers()
     print("[INFO] Публикация ответов на вопросы не настроена")
 
-# ======================== 4.2 БЭКАП БД (ЧЕРЕЗ МОДУЛЬ) =========================
 def backup_db():
     if backup:
         return backup.backup_db()
-    # fallback
     try:
         if not os.path.exists("backups"):
             os.makedirs("backups")
@@ -179,7 +168,6 @@ def backup_db():
     except Exception as e:
         print(f"[ERROR] Ошибка бэкапа: {e}")
 
-# ======================== 4.3 МОНИТОРИНГ (ЧЕРЕЗ МОДУЛЬ) =========================
 def check_health():
     if monitor:
         return monitor.check_health()
@@ -190,11 +178,9 @@ def check_health():
     except Exception as e:
         send_message(ADMIN_CHAT_ID, f"❌ Ошибка мониторинга: {e}")
 
-# ======================== 4.4 УПРАВЛЕНИЕ ПРОМПТАМИ (ЧЕРЕЗ МОДУЛЬ) =========================
 def get_prompt(name='system_prompt'):
     if prompt_manager:
         return prompt_manager.get_prompt(name)
-    # fallback
     row = execute_query('SELECT content FROM prompts WHERE name = ?', (name,), fetchone=True)
     return row[0] if row else None
 
@@ -203,11 +189,9 @@ def set_prompt(name, content):
         return prompt_manager.set_prompt(name, content)
     execute_query('REPLACE INTO prompts (name, content) VALUES (?, ?)', (name, content))
 
-# ======================== 6.1-6.4 СТАТИСТИКА (ЧЕРЕЗ МОДУЛЬ) =========================
 def update_stats():
     if stats:
         return stats.update_stats()
-    # fallback: обновляем просмотры и реакции для необработанных постов
     rows = execute_query(
         'SELECT session_id, message_id FROM posts WHERE status = "published" AND message_id IS NOT NULL AND views = 0',
         fetch=True
@@ -227,7 +211,6 @@ def update_stats():
                         'UPDATE posts SET views = ?, reactions = ? WHERE session_id = ?',
                         (views, reactions, row['session_id'])
                     )
-                    # Сохраняем время публикации для тепловой карты (6.2)
                     execute_query(
                         'INSERT INTO publish_times (post_id, publish_hour, publish_weekday, views, reactions) '
                         'SELECT id, strftime("%H", created_at), strftime("%w", created_at), ?, ? FROM posts WHERE session_id = ?',
@@ -265,70 +248,117 @@ def execute_query(query, params=None, fetch=False, fetchone=False):
 def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
-    # Основные таблицы
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS posts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT UNIQUE,
-            text TEXT,
-            image_path TEXT,
-            image_prompt TEXT,
-            topic TEXT,
-            status TEXT DEFAULT 'pending',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            approved_at TIMESTAMP,
-            scheduled_publish_time TIMESTAMP,
-            published_at TIMESTAMP,
-            edit_pending INTEGER DEFAULT 0,
-            rating INTEGER DEFAULT 0,
-            reposted INTEGER DEFAULT 0,
-            message_id INTEGER,
-            views INTEGER DEFAULT 0,
-            reactions INTEGER DEFAULT 0
+    if DATABASE_URL:
+        # PostgreSQL
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS posts (
+                id SERIAL PRIMARY KEY,
+                session_id TEXT UNIQUE,
+                text TEXT,
+                image_path TEXT,
+                image_prompt TEXT,
+                topic TEXT,
+                status TEXT DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                approved_at TIMESTAMP,
+                scheduled_publish_time TIMESTAMP,
+                published_at TIMESTAMP,
+                edit_pending BOOLEAN DEFAULT FALSE,
+                rating INTEGER DEFAULT 0,
+                reposted BOOLEAN DEFAULT FALSE,
+                message_id BIGINT,
+                views INTEGER DEFAULT 0,
+                reactions INTEGER DEFAULT 0
+            )
+        ''')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON posts(session_id)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_status ON posts(status)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_scheduled_publish ON posts(scheduled_publish_time)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_topic ON posts(topic)')
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS prompts (
+                name TEXT PRIMARY KEY,
+                content TEXT
+            )
+        ''')
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS publish_times (
+                id SERIAL PRIMARY KEY,
+                post_id INTEGER,
+                publish_hour INTEGER,
+                publish_weekday INTEGER,
+                views INTEGER,
+                reactions INTEGER,
+                FOREIGN KEY(post_id) REFERENCES posts(id)
+            )
+        ''')
+        default_prompt = (
+            "Ты — автор канала «Скептик с EBITDA».\n"
+            "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
+            "НЕ выводи <think>, рассуждения — только готовый пост.\n"
+            "Используй только актуальные данные (2023–2026 год).\n"
+            "Структура поста (ОБЯЗАТЕЛЬНО):\n"
+            "1. Заголовок с эмодзи (например, 🚨).\n"
+            "2. Каждый новый смысловой блок начинай с эмодзи (📉, 🏬, 💰, ⚠️).\n"
+            "3. Ставь двойной перенос между абзацами.\n"
+            "4. Ключевые цифры выделяй жирным через **...** (например, **17.2 млрд**).\n"
+            "5. В конце — Action Item с ✅ (отдельно).\n"
+            "6. После Action Item — источник и хештеги (#тег1 #тег2).\n"
+            "7. Не используй разделители вроде '---'.\n"
+            "8. Включи цитату из отчёта или интервью топ-менеджера.\n"
+            "После текста === и описание картинки (англ., 3–4 слова)."
         )
-    ''')
-    cur.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON posts(session_id)')
-    cur.execute('CREATE INDEX IF NOT EXISTS idx_status ON posts(status)')
-    cur.execute('CREATE INDEX IF NOT EXISTS idx_scheduled_publish ON posts(scheduled_publish_time)')
-    cur.execute('CREATE INDEX IF NOT EXISTS idx_topic ON posts(topic)')
-    # 4.4 Таблица промптов
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS prompts (
-            name TEXT PRIMARY KEY,
-            content TEXT
-        )
-    ''')
-    default_prompt = (
-        "Ты — автор канала «Скептик с EBITDA».\n"
-        "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
-        "НЕ выводи <think>, рассуждения — только готовый пост.\n"
-        "Используй только актуальные данные (2023–2026 год).\n"
-        "Структура поста (ОБЯЗАТЕЛЬНО):\n"
-        "1. Заголовок с эмодзи (например, 🚨).\n"
-        "2. Каждый новый смысловой блок начинай с эмодзи (📉, 🏬, 💰, ⚠️).\n"
-        "3. Ставь двойной перенос между абзацами.\n"
-        "4. Ключевые цифры выделяй жирным через **...** (например, **17.2 млрд**).\n"
-        "5. В конце — Action Item с ✅ (отдельно).\n"
-        "6. После Action Item — источник и хештеги (#тег1 #тег2).\n"
-        "7. Не используй разделители вроде '---'.\n"
-        "8. Включи цитату из отчёта или интервью топ-менеджера.\n"
-        "После текста === и описание картинки (англ., 3–4 слова)."
-    )
-    cur.execute('''
-        INSERT OR IGNORE INTO prompts (name, content) VALUES ('system_prompt', ?)
-    ''', (default_prompt,))
-    # 6.2 Тепловая карта
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS publish_times (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            post_id INTEGER,
-            publish_hour INTEGER,
-            publish_weekday INTEGER,
-            views INTEGER,
-            reactions INTEGER,
-            FOREIGN KEY(post_id) REFERENCES posts(id)
-        )
-    ''')
+        cur.execute('''
+            INSERT INTO prompts (name, content) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING
+        ''', ('system_prompt', default_prompt))
+    else:
+        # SQLite
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS posts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT UNIQUE,
+                text TEXT,
+                image_path TEXT,
+                image_prompt TEXT,
+                topic TEXT,
+                status TEXT DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                approved_at TIMESTAMP,
+                scheduled_publish_time TIMESTAMP,
+                published_at TIMESTAMP,
+                edit_pending INTEGER DEFAULT 0,
+                rating INTEGER DEFAULT 0,
+                reposted INTEGER DEFAULT 0,
+                message_id INTEGER,
+                views INTEGER DEFAULT 0,
+                reactions INTEGER DEFAULT 0
+            )
+        ''')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON posts(session_id)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_status ON posts(status)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_scheduled_publish ON posts(scheduled_publish_time)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_topic ON posts(topic)')
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS prompts (
+                name TEXT PRIMARY KEY,
+                content TEXT
+            )
+        ''')
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS publish_times (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                post_id INTEGER,
+                publish_hour INTEGER,
+                publish_weekday INTEGER,
+                views INTEGER,
+                reactions INTEGER,
+                FOREIGN KEY(post_id) REFERENCES posts(id)
+            )
+        ''')
+        default_prompt = "..."  # тот же текст, что выше
+        cur.execute('''
+            INSERT OR IGNORE INTO prompts (name, content) VALUES (?, ?)
+        ''', ('system_prompt', default_prompt))
     conn.commit()
     cur.close()
     conn.close()
@@ -337,14 +367,11 @@ init_db()
 
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
-    # 1.3 – тема из трендов (если есть модуль)
     topic = get_trending_topic()
     if not topic:
-        # fallback на аналитику
         topic = get_topic_by_analytics()
     print(f"[DEBUG] Выбрана тема: {topic}")
 
-    # 1.2 – выбор формата
     fmt = select_format()
     style = {
         "мем": "Саркастичный, с юмором, короткий (до 300 символов).",
@@ -352,13 +379,11 @@ def generate_post():
         "аналитика": "Глубокий разбор цифр, трендов, выводы."
     }.get(fmt, "Дерзкий, саркастичный, с реальными цифрами.")
 
-    # 1.1 – финансовые данные (если есть ключ)
     financials = get_financial_data("OZON")
     financial_text = ""
     if financials:
         financial_text = f"Используй актуальные цифры: выручка {financials['revenue']}, прибыль {financials['profit']}, EBITDA {financials['ebitda']}."
 
-    # 4.4 – системный промпт из БД
     system_content = get_prompt('system_prompt')
     if not system_content:
         system_content = default_prompt
@@ -533,7 +558,6 @@ def split_into_parts(text, max_len=1000):
     return result_parts if result_parts else [text[:max_len] + "..."]
 
 def generate_image(prompt, image_prompt=None, extra_data=None):
-    # 1.4 Инфографика
     if extra_data and isinstance(extra_data, dict):
         data = extra_data.get('data')
         labels = extra_data.get('labels')
@@ -541,7 +565,6 @@ def generate_image(prompt, image_prompt=None, extra_data=None):
             img_path = create_infographic(data, labels)
             if img_path:
                 return img_path
-    # Fallback на Pollinations
     if len(prompt) > 100:
         prompt = prompt[:100]
     for attempt in range(3):
@@ -562,7 +585,6 @@ def generate_image(prompt, image_prompt=None, extra_data=None):
                     continue
                 with open("temp_image.jpg", "wb") as f:
                     f.write(content)
-                # Проверка на чёрное изображение
                 try:
                     img = Image.open("temp_image.jpg")
                     if img.width < 50 or img.height < 50:
@@ -733,7 +755,6 @@ def schedule_publish(session_id):
 # ======================== ОБРАБОТЧИК КОМАНД АДМИНА (4.1) =========================
 def handle_admin_command(text, chat_id):
     if text.startswith('/stats'):
-        # 6.1 Статистика
         rows = execute_query(
             'SELECT COUNT(*) as total, SUM(CASE WHEN status="published" THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status="rejected" THEN 1 ELSE 0 END) as rejected FROM posts',
             fetchone=True
@@ -746,12 +767,11 @@ def handle_admin_command(text, chat_id):
             set_prompt('system_prompt', new_prompt)
             send_message(chat_id, "✅ Промпт обновлён!")
         else:
-            send_message(chat_id, "❌ Напиши новый промпт после команды, например: /setprompt Ты — автор...")
+            send_message(chat_id, "❌ Напиши новый промпт после команды")
     elif text.startswith('/getprompt'):
         current = get_prompt('system_prompt')
         send_message(chat_id, f"Текущий промпт:\n\n{current}")
     elif text.startswith('/generate'):
-        # Запуск генерации вручную
         send_message(chat_id, "🔄 Запускаю генерацию...")
         job(auto_publish=False)
     elif text.startswith('/backup'):
@@ -895,17 +915,14 @@ def update_post_text(session_id, new_text):
 def job(auto_publish=False):
     print(f"[DEBUG] job started at {datetime.now()}")
     send_message(ADMIN_CHAT_ID, f"🔄 Генерация поста начата в {datetime.now().strftime('%H:%M:%S')}")
-    # 4.2 Бэкап при старте (если не делался сегодня)
     if not os.path.exists("backups"):
         backup_db()
-    # 6.1 Обновление статистики
     update_stats()
     check_and_repost()
     print(f"[{datetime.now()}] Генерация поста...")
     try:
         post_text, image_prompt, topic = generate_post()
         print(f"[DEBUG] post_text получен, длина {len(post_text)}")
-        # 1.1 – финансовая инфографика
         financials = get_financial_data("OZON")
         extra_data = None
         if financials:
@@ -990,15 +1007,15 @@ def publish_scheduled_posts():
                 print(f"[{datetime.now()}] ❌ Ошибка публикации {p['session_id']}")
 
 # ======================== РАСПИСАНИЕ =========================
-schedule.every().day.at("15:00").do(lambda: job(auto_publish=False))  # 18:00 МСК – модерация
-schedule.every().day.at("07:00").do(publish_scheduled_posts)          # 10:00 МСК – публикация
-schedule.every().sunday.at("17:00").do(weekly_report)                # 20:00 МСК – отчёт
-schedule.every().day.at("03:00").do(backup_db)                       # 4.2 Бэкап БД
-schedule.every().sunday.at("20:00").do(collect_questions)            # 2.2 Сбор вопросов
-schedule.every().wednesday.at("10:00").do(publish_answers)           # 2.2 Ответы на вопросы
-schedule.every().hour.do(update_stats)                               # 6.1 Обновление статистики
+schedule.every().day.at("15:00").do(lambda: job(auto_publish=False))
+schedule.every().day.at("07:00").do(publish_scheduled_posts)
+schedule.every().sunday.at("17:00").do(weekly_report)
+schedule.every().day.at("03:00").do(backup_db)
+schedule.every().sunday.at("20:00").do(collect_questions)
+schedule.every().wednesday.at("10:00").do(publish_answers)
+schedule.every().hour.do(update_stats)
 
-# ======================== ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ (6.3 – конкурсы, 6.4 – прогноз) =========================
+# ======================== ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ =========================
 def weekly_report():
     stats = execute_query(
         'SELECT COUNT(*) as total, SUM(CASE WHEN status="published" THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status="rejected" THEN 1 ELSE 0 END) as rejected FROM posts WHERE created_at >= ?',
@@ -1058,7 +1075,6 @@ def start_health_server():
 
 threading.Thread(target=start_health_server, daemon=True).start()
 
-# ======================== САМОПИНГ =========================
 def keep_alive():
     url = "https://skeptik-bot.onrender.com"
     while True:
