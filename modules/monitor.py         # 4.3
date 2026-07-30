@@ -1,0 +1,10 @@
+import requests
+import time
+
+def check_health():
+    try:
+        resp = requests.get("https://skeptik-bot.onrender.com/", timeout=10)
+        if resp.status_code != 200:
+            send_message(ADMIN_CHAT_ID, "⚠️ Бот не отвечает! Статус: {resp.status_code}")
+    except Exception as e:
+        send_message(ADMIN_CHAT_ID, f"❌ Ошибка мониторинга: {e}")

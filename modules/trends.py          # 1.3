@@ -1,0 +1,11 @@
+from pytrends.request import TrendReq
+import pandas as pd
+
+def get_trending_topic():
+    pytrends = TrendReq(hl='ru-RU', tz=180)
+    trending = pytrends.trending_searches(pn='russia')
+    # Возвращаем первую тему, связанную с бизнесом
+    for topic in trending[0].values:
+        if any(kw in topic.lower() for kw in ["ozon", "wildberries", "магнит", "ритейл", "бизнес"]):
+            return topic
+    return None

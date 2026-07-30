@@ -1,0 +1,8 @@
+import shutil
+import datetime
+
+def backup_db():
+    src = "posts.db"
+    dst = f"backups/posts_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+    shutil.copyfile(src, dst)
+    # Можно также отправить в облако (S3, Google Drive)

@@ -1,0 +1,12 @@
+import matplotlib.pyplot as plt
+import io
+from PIL import Image
+
+def create_infographic(data, labels):
+    fig, ax = plt.subplots()
+    ax.bar(labels, data, color=['green', 'red', 'blue'])
+    ax.set_title("Ключевые показатели")
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png')
+    buf.seek(0)
+    return Image.open(buf)

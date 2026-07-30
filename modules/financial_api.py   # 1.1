@@ -1,0 +1,14 @@
+import requests
+import os
+
+ALPHA_VANTAGE_KEY = os.getenv("ALPHA_VANTAGE_KEY")
+
+def get_company_overview(symbol="OZON"):
+    url = f"https://www.alphavantage.co/query?function=OVERVIEW&symbol={symbol}&apikey={ALPHA_VANTAGE_KEY}"
+    resp = requests.get(url)
+    data = resp.json()
+    return {
+        "revenue": data.get("RevenueTTM", "N/A"),
+        "profit": data.get("ProfitMargin", "N/A"),
+        "ebitda": data.get("EBITDA", "N/A")
+    }

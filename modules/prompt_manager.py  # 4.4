@@ -1,0 +1,7 @@
+def get_prompt(name):
+    cur.execute("SELECT content FROM prompts WHERE name=?", (name,))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+def set_prompt(name, content):
+    cur.execute("REPLACE INTO prompts (name, content) VALUES (?, ?)", (name, content))

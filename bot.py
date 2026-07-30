@@ -16,6 +16,63 @@ import re
 import pytz
 import feedparser
 from PIL import Image
+import sqlite3
+from contextlib import closing
+
+# ======================== ИМПОРТ МОДУЛЕЙ (ЕСЛИ ОНИ ЕСТЬ) =========================
+try:
+    from modules import trends
+except ImportError:
+    trends = None
+    print("[WARN] Модуль trends не найден, тренды Google недоступны")
+
+try:
+    from modules import image_enhancer
+except ImportError:
+    image_enhancer = None
+    print("[WARN] Модуль image_enhancer не найден, инфографика недоступна")
+
+try:
+    from modules import prompt_manager
+except ImportError:
+    prompt_manager = None
+    print("[WARN] Модуль prompt_manager не найден, управление промптами из БД недоступно")
+
+try:
+    from modules import financial_api
+except ImportError:
+    financial_api = None
+    print("[WARN] Модуль financial_api не найден, финансовые API недоступны")
+
+try:
+    from modules import format_selector
+except ImportError:
+    format_selector = None
+    print("[WARN] Модуль format_selector не найден, выбор формата поста недоступен")
+
+try:
+    from modules import qa_collector
+except ImportError:
+    qa_collector = None
+    print("[WARN] Модуль qa_collector не найден, сбор вопросов недоступен")
+
+try:
+    from modules import backup
+except ImportError:
+    backup = None
+    print("[WARN] Модуль backup не найден, автоматический бэкап недоступен")
+
+try:
+    from modules import monitor
+except ImportError:
+    monitor = None
+    print("[WARN] Модуль monitor не найден, мониторинг состояния недоступен")
+
+try:
+    from modules import stats
+except ImportError:
+    stats = None
+    print("[WARN] Модуль stats не найден, расширенная статистика недоступна")
 
 # ======================== КОНФИГУРАЦИЯ =========================
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
@@ -23,11 +80,13 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
+ALPHA_VANTAGE_KEY = os.getenv("ALPHA_VANTAGE_KEY")
 
 API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
 MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
 
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
+DB_PATH = "posts.db" if not DATABASE_URL else None
 
 DAY_TOPICS = {
     0: "логистические провалы Ozon: затраты, сроки доставки, убытки",
@@ -63,333 +122,253 @@ API_DEFAULT_MODEL = config["default_model"]
 if not MODEL_NAME:
     MODEL_NAME = API_DEFAULT_MODEL
 
-# ======================== RSS И АНАЛИТИКА =========================
-def get_topic_from_news():
-    rss_urls = [
-        "https://www.rbc.ru/rss/",
-        "https://www.kommersant.ru/RSS/news.xml",
-        "https://lenta.ru/rss/news"
-    ]
-    keywords = ["ozon", "wildberries", "магнит", "ритейл", "торговля", "нефть", "лукойл"]
+# ======================== 1.1 ФИНАНСОВЫЕ API (ЧЕРЕЗ МОДУЛЬ) =========================
+def get_financial_data(symbol="OZON"):
+    if financial_api:
+        return financial_api.get_financial_data(symbol)
+    return None
+
+# ======================== 1.2 ВЫБОР ФОРМАТА ПОСТА =========================
+def select_format():
+    if format_selector:
+        return format_selector.select_format()
+    weekday = datetime.now().weekday()
+    formats = ["мем", "новость", "аналитика", "мем", "аналитика", "новость", "мем"]
+    return formats[weekday % len(formats)]
+
+# ======================== 1.3 ТРЕНДЫ GOOGLE (ЧЕРЕЗ МОДУЛЬ) =========================
+def get_trending_topic():
+    if trends:
+        return trends.get_trending_topic()
+    return None
+
+# ======================== 1.4 ИНФОГРАФИКА (ЧЕРЕЗ МОДУЛЬ) =========================
+def create_infographic(data, labels, title="Ключевые показатели"):
+    if image_enhancer:
+        return image_enhancer.create_infographic(data, labels, title)
+    return None
+
+# ======================== 1.5 ЦИТАТЫ И 1.6 СТРУКТУРА (В ПРОМПТЕ) =========================
+# Уже встроены в системный промпт через БД
+
+# ======================== 2.2 ЕЖЕНЕДЕЛЬНЫЙ «ЧАС ВОПРОСОВ» (ЧЕРЕЗ МОДУЛЬ) =========================
+def collect_questions():
+    if qa_collector:
+        return qa_collector.collect_questions()
+    print("[INFO] Сбор вопросов не настроен")
+
+def publish_answers():
+    if qa_collector:
+        return qa_collector.publish_answers()
+    print("[INFO] Публикация ответов на вопросы не настроена")
+
+# ======================== 4.2 БЭКАП БД (ЧЕРЕЗ МОДУЛЬ) =========================
+def backup_db():
+    if backup:
+        return backup.backup_db()
+    # fallback
     try:
-        for url in rss_urls:
-            feed = feedparser.parse(url)
-            for entry in feed.entries[:5]:
-                title = entry.title.lower()
-                if any(kw in title for kw in keywords):
-                    summary = entry.summary if hasattr(entry, 'summary') else ""
-                    return f"{entry.title}. {summary[:100]}"
-        return DAY_TOPICS.get(datetime.now().weekday(), DAY_TOPICS[0])
+        if not os.path.exists("backups"):
+            os.makedirs("backups")
+        import shutil
+        src = "posts.db" if not DATABASE_URL else None
+        if src and os.path.exists(src):
+            dst = f"backups/posts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+            shutil.copyfile(src, dst)
+            print(f"[INFO] Бэкап создан: {dst}")
     except Exception as e:
-        print(f"[WARN] Ошибка RSS: {e}")
-        return DAY_TOPICS.get(datetime.now().weekday(), DAY_TOPICS[0])
+        print(f"[ERROR] Ошибка бэкапа: {e}")
 
-def get_topic_by_analytics():
-    week_ago = (datetime.now() - timedelta(days=7)).isoformat()
+# ======================== 4.3 МОНИТОРИНГ (ЧЕРЕЗ МОДУЛЬ) =========================
+def check_health():
+    if monitor:
+        return monitor.check_health()
+    try:
+        resp = requests.get("https://skeptik-bot.onrender.com/", timeout=10)
+        if resp.status_code != 200:
+            send_message(ADMIN_CHAT_ID, f"⚠️ Бот не отвечает! Статус: {resp.status_code}")
+    except Exception as e:
+        send_message(ADMIN_CHAT_ID, f"❌ Ошибка мониторинга: {e}")
+
+# ======================== 4.4 УПРАВЛЕНИЕ ПРОМПТАМИ (ЧЕРЕЗ МОДУЛЬ) =========================
+def get_prompt(name='system_prompt'):
+    if prompt_manager:
+        return prompt_manager.get_prompt(name)
+    # fallback
+    row = execute_query('SELECT content FROM prompts WHERE name = ?', (name,), fetchone=True)
+    return row[0] if row else None
+
+def set_prompt(name, content):
+    if prompt_manager:
+        return prompt_manager.set_prompt(name, content)
+    execute_query('REPLACE INTO prompts (name, content) VALUES (?, ?)', (name, content))
+
+# ======================== 6.1-6.4 СТАТИСТИКА (ЧЕРЕЗ МОДУЛЬ) =========================
+def update_stats():
+    if stats:
+        return stats.update_stats()
+    # fallback: обновляем просмотры и реакции для необработанных постов
     rows = execute_query(
-        'SELECT topic, rating, views, reactions FROM posts WHERE status = \'published\' AND published_at >= ? AND topic IS NOT NULL AND topic != \'\'',
-        (week_ago,), fetch=True
+        'SELECT session_id, message_id FROM posts WHERE status = "published" AND message_id IS NOT NULL AND views = 0',
+        fetch=True
     )
-    if not rows:
-        print("[DEBUG] Нет данных для аналитики, используем RSS")
-        return get_topic_from_news()
-
-    topic_stats = {}
     for row in rows:
-        topic = row['topic']
-        rating = row['rating'] or 0
-        views = row['views'] or 0
-        reactions = row['reactions'] or 0
-        score = rating + views * 0.1 + reactions * 0.5
-        if topic not in topic_stats:
-            topic_stats[topic] = 0
-        topic_stats[topic] += score
-
-    if not topic_stats:
-        return get_topic_from_news()
-
-    best_topic = max(topic_stats, key=topic_stats.get)
-    print(f"[DEBUG] Лучшая тема по аналитике: {best_topic} (score: {topic_stats[best_topic]:.1f})")
-    return best_topic
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMessageStatistics"
+            params = {"chat_id": TELEGRAM_CHAT_ID, "message_id": row['message_id']}
+            resp = requests.get(url, params=params, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get('ok'):
+                    stats_data = data.get('result', {})
+                    views = stats_data.get('views', 0)
+                    reactions = sum(r.get('count', 0) for r in stats_data.get('reactions', []))
+                    execute_query(
+                        'UPDATE posts SET views = ?, reactions = ? WHERE session_id = ?',
+                        (views, reactions, row['session_id'])
+                    )
+                    # Сохраняем время публикации для тепловой карты (6.2)
+                    execute_query(
+                        'INSERT INTO publish_times (post_id, publish_hour, publish_weekday, views, reactions) '
+                        'SELECT id, strftime("%H", created_at), strftime("%w", created_at), ?, ? FROM posts WHERE session_id = ?',
+                        (views, reactions, row['session_id'])
+                    )
+        except Exception as e:
+            print(f"[ERROR] Ошибка обновления статистики: {e}")
 
 # ======================== БАЗА ДАННЫХ =========================
-if DATABASE_URL:
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-    def get_db_connection():
+def get_db_connection():
+    if DATABASE_URL:
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
         return psycopg2.connect(DATABASE_URL, sslmode='require')
-    db_type = 'postgres'
-else:
-    import sqlite3
-    from contextlib import closing
-    DB_PATH = "posts.db"
-    db_type = 'sqlite'
-
-def init_db():
-    if db_type == 'postgres':
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS posts (
-                id SERIAL PRIMARY KEY,
-                session_id TEXT UNIQUE,
-                text TEXT,
-                image_path TEXT,
-                image_prompt TEXT,
-                topic TEXT,
-                status TEXT DEFAULT 'pending',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                approved_at TIMESTAMP,
-                scheduled_publish_time TIMESTAMP,
-                published_at TIMESTAMP,
-                edit_pending BOOLEAN DEFAULT FALSE,
-                rating INTEGER DEFAULT 0,
-                reposted BOOLEAN DEFAULT FALSE,
-                message_id BIGINT,
-                views INTEGER DEFAULT 0,
-                reactions INTEGER DEFAULT 0
-            )
-        ''')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON posts(session_id)')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_status ON posts(status)')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_scheduled_publish ON posts(scheduled_publish_time)')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_topic ON posts(topic)')
-        conn.commit()
-        cur.close()
-        conn.close()
     else:
-        with closing(sqlite3.connect(DB_PATH)) as conn:
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS posts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT UNIQUE,
-                    text TEXT,
-                    image_path TEXT,
-                    image_prompt TEXT,
-                    topic TEXT,
-                    status TEXT DEFAULT 'pending',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    approved_at TIMESTAMP,
-                    scheduled_publish_time TIMESTAMP,
-                    published_at TIMESTAMP,
-                    edit_pending INTEGER DEFAULT 0,
-                    rating INTEGER DEFAULT 0,
-                    reposted INTEGER DEFAULT 0,
-                    message_id INTEGER,
-                    views INTEGER DEFAULT 0,
-                    reactions INTEGER DEFAULT 0
-                )
-            ''')
-            conn.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON posts(session_id)')
-            conn.execute('CREATE INDEX IF NOT EXISTS idx_status ON posts(status)')
-            conn.execute('CREATE INDEX IF NOT EXISTS idx_scheduled_publish ON posts(scheduled_publish_time)')
-            conn.execute('CREATE INDEX IF NOT EXISTS idx_topic ON posts(topic)')
-            conn.commit()
-init_db()
+        return sqlite3.connect(DB_PATH)
 
 def execute_query(query, params=None, fetch=False, fetchone=False):
-    if db_type == 'postgres':
+    conn = get_db_connection()
+    cur = conn.cursor()
+    if DATABASE_URL:
         query = query.replace('?', '%s')
-        conn = get_db_connection()
-        cur = conn.cursor(cursor_factory=RealDictCursor if fetch or fetchone else None)
-        cur.execute(query, params)
-        if fetch:
-            result = cur.fetchall()
-        elif fetchone:
-            result = cur.fetchone()
-        else:
-            result = None
-        conn.commit()
-        cur.close()
-        conn.close()
-        return result
+    cur.execute(query, params or ())
+    if fetch:
+        result = cur.fetchall()
+    elif fetchone:
+        result = cur.fetchone()
     else:
-        with closing(sqlite3.connect(DB_PATH)) as conn:
-            conn.row_factory = sqlite3.Row
-            cur = conn.cursor()
-            cur.execute(query, params)
-            if fetch:
-                result = [dict(row) for row in cur.fetchall()]
-            elif fetchone:
-                row = cur.fetchone()
-                result = dict(row) if row else None
-            else:
-                result = None
-            conn.commit()
-            return result
+        result = None
+    conn.commit()
+    cur.close()
+    conn.close()
+    return result
 
-def save_post(session_id, text, image_path, image_prompt, topic):
-    if db_type == 'postgres':
-        query = '''
-            INSERT INTO posts (session_id, text, image_path, image_prompt, topic, status, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (session_id) DO UPDATE SET
-                text = EXCLUDED.text,
-                image_path = EXCLUDED.image_path,
-                image_prompt = EXCLUDED.image_prompt,
-                topic = EXCLUDED.topic,
-                status = EXCLUDED.status,
-                created_at = EXCLUDED.created_at
-        '''
-        params = (session_id, text, image_path, image_prompt, topic, 'pending', datetime.now().isoformat())
-    else:
-        query = 'INSERT OR REPLACE INTO posts (session_id, text, image_path, image_prompt, topic, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
-        params = (session_id, text, image_path, image_prompt, topic, 'pending', datetime.now().isoformat())
-    execute_query(query, params)
-    print(f"[DEBUG] Пост сохранён: {session_id}")
-
-def get_post(session_id):
-    row = execute_query('SELECT text, image_path, image_prompt, status, scheduled_publish_time, edit_pending, rating, reposted, message_id, topic FROM posts WHERE session_id = ?', (session_id,), fetchone=True)
-    return row
-
-def update_post_text(session_id, new_text):
-    execute_query('UPDATE posts SET text = ? WHERE session_id = ?', (new_text, session_id))
-
-def update_post_status(session_id, status, scheduled_time=None):
-    if scheduled_time:
-        execute_query('UPDATE posts SET status = ?, scheduled_publish_time = ?, approved_at = ? WHERE session_id = ?',
-                      (status, scheduled_time.isoformat(), datetime.now().isoformat(), session_id))
-    else:
-        execute_query('UPDATE posts SET status = ? WHERE session_id = ?', (status, session_id))
-
-def delete_post(session_id):
-    execute_query('DELETE FROM posts WHERE session_id = ?', (session_id,))
-
-def get_approved_posts_to_publish():
-    now = datetime.now().isoformat()
-    rows = execute_query(
-        'SELECT session_id, text, image_path FROM posts WHERE status = \'approved\' AND scheduled_publish_time <= ?',
-        (now,), fetch=True
+def init_db():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    # Основные таблицы
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS posts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT UNIQUE,
+            text TEXT,
+            image_path TEXT,
+            image_prompt TEXT,
+            topic TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            approved_at TIMESTAMP,
+            scheduled_publish_time TIMESTAMP,
+            published_at TIMESTAMP,
+            edit_pending INTEGER DEFAULT 0,
+            rating INTEGER DEFAULT 0,
+            reposted INTEGER DEFAULT 0,
+            message_id INTEGER,
+            views INTEGER DEFAULT 0,
+            reactions INTEGER DEFAULT 0
+        )
+    ''')
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON posts(session_id)')
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_status ON posts(status)')
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_scheduled_publish ON posts(scheduled_publish_time)')
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_topic ON posts(topic)')
+    # 4.4 Таблица промптов
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS prompts (
+            name TEXT PRIMARY KEY,
+            content TEXT
+        )
+    ''')
+    default_prompt = (
+        "Ты — автор канала «Скептик с EBITDA».\n"
+        "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
+        "НЕ выводи <think>, рассуждения — только готовый пост.\n"
+        "Используй только актуальные данные (2023–2026 год).\n"
+        "Структура поста (ОБЯЗАТЕЛЬНО):\n"
+        "1. Заголовок с эмодзи (например, 🚨).\n"
+        "2. Каждый новый смысловой блок начинай с эмодзи (📉, 🏬, 💰, ⚠️).\n"
+        "3. Ставь двойной перенос между абзацами.\n"
+        "4. Ключевые цифры выделяй жирным через **...** (например, **17.2 млрд**).\n"
+        "5. В конце — Action Item с ✅ (отдельно).\n"
+        "6. После Action Item — источник и хештеги (#тег1 #тег2).\n"
+        "7. Не используй разделители вроде '---'.\n"
+        "8. Включи цитату из отчёта или интервью топ-менеджера.\n"
+        "После текста === и описание картинки (англ., 3–4 слова)."
     )
-    return rows
+    cur.execute('''
+        INSERT OR IGNORE INTO prompts (name, content) VALUES ('system_prompt', ?)
+    ''', (default_prompt,))
+    # 6.2 Тепловая карта
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS publish_times (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id INTEGER,
+            publish_hour INTEGER,
+            publish_weekday INTEGER,
+            views INTEGER,
+            reactions INTEGER,
+            FOREIGN KEY(post_id) REFERENCES posts(id)
+        )
+    ''')
+    conn.commit()
+    cur.close()
+    conn.close()
 
-def get_weekly_stats():
-    week_ago = (datetime.now() - timedelta(days=7)).isoformat()
-    rows = execute_query(
-        'SELECT COUNT(*) as total, SUM(CASE WHEN status=\'published\' THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status=\'rejected\' THEN 1 ELSE 0 END) as rejected FROM posts WHERE created_at >= ?',
-        (week_ago,), fetchone=True
-    )
-    return rows
-
-# ======================== ПРОСТАЯ ПОСТОБРАБОТКА (HTML) =========================
-def beautify_post(text):
-    if not text:
-        return ""
-    text = re.sub(r'\s+', ' ', text).strip()
-
-    action_text = ""
-    match = re.search(r'(✅.*?)(?=\s*[A-Z#]|$)', text, re.DOTALL)
-    if not match:
-        match = re.search(r'(Action Item:.*?)(?=\s*[A-Z#]|$)', text, re.DOTALL)
-    if match:
-        action_text = match.group(1).strip()
-        text = text.replace(action_text, '').strip()
-        if not action_text.startswith('✅'):
-            action_text = '✅ ' + action_text
-
-    sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
-    paragraphs = []
-    i = 0
-    while i < len(sentences):
-        if i+1 < len(sentences):
-            paragraphs.append(sentences[i] + ' ' + sentences[i+1])
-            i += 2
-        else:
-            paragraphs.append(sentences[i])
-            i += 1
-    text = '\n\n'.join(paragraphs)
-
-    # Выделяем числа жирным через HTML
-    def replacer(m):
-        num = m.group(0)
-        if not re.search(r'<b>.*?' + re.escape(num) + r'.*?</b>', text):
-            return f'<b>{num}</b>'
-        return num
-    text = re.sub(r'\b(\d+[.,]?\d*)\b', replacer, text)
-
-    if action_text:
-        hashtag_match = re.search(r'(#\w+(?:\s*#\w+)*)$', text)
-        if hashtag_match:
-            hashtags = hashtag_match.group(1)
-            text = text.replace(hashtags, '').strip()
-            text = text + f'\n\n<b>{action_text}</b>\n\n{hashtags}'
-        else:
-            text = text + f'\n\n<b>{action_text}</b>'
-
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    return text
-
-# ======================== РАЗБИВКА НА ЧАСТИ (СОХРАНЯЕТ АБЗАЦЫ) =========================
-def split_into_parts(text, max_len=1000):
-    if len(text) <= max_len:
-        return [text]
-
-    paragraphs = text.split('\n\n')
-    result_parts = []
-    current_part = ""
-
-    for para in paragraphs:
-        if not para.strip():
-            continue
-        if len(current_part) + len(para) + 2 <= max_len:
-            if current_part:
-                current_part += '\n\n' + para
-            else:
-                current_part = para
-        else:
-            if len(para) > max_len:
-                sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', para) if s.strip()]
-                for sent in sentences:
-                    if len(current_part) + len(sent) + 2 <= max_len:
-                        if current_part:
-                            current_part += ' ' + sent
-                        else:
-                            current_part = sent
-                    else:
-                        if current_part:
-                            result_parts.append(current_part)
-                        current_part = sent
-            else:
-                if current_part:
-                    result_parts.append(current_part)
-                current_part = para
-
-    if current_part:
-        result_parts.append(current_part)
-
-    return result_parts if result_parts else [text[:max_len] + "..."]
+init_db()
 
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
-    topic = get_topic_by_analytics()
+    # 1.3 – тема из трендов (если есть модуль)
+    topic = get_trending_topic()
+    if not topic:
+        # fallback на аналитику
+        topic = get_topic_by_analytics()
     print(f"[DEBUG] Выбрана тема: {topic}")
+
+    # 1.2 – выбор формата
+    fmt = select_format()
+    style = {
+        "мем": "Саркастичный, с юмором, короткий (до 300 символов).",
+        "новость": "Информативный, факты, даты, цитаты.",
+        "аналитика": "Глубокий разбор цифр, трендов, выводы."
+    }.get(fmt, "Дерзкий, саркастичный, с реальными цифрами.")
+
+    # 1.1 – финансовые данные (если есть ключ)
+    financials = get_financial_data("OZON")
+    financial_text = ""
+    if financials:
+        financial_text = f"Используй актуальные цифры: выручка {financials['revenue']}, прибыль {financials['profit']}, EBITDA {financials['ebitda']}."
+
+    # 4.4 – системный промпт из БД
+    system_content = get_prompt('system_prompt')
+    if not system_content:
+        system_content = default_prompt
 
     headers = API_HEADERS_FUNC(DEEPSEEK_API_KEY)
     payload = {
         "model": MODEL_NAME,
         "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "Ты — автор канала «Скептик с EBITDA».\n"
-                    "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
-                    "НЕ выводи <think>, рассуждения — только готовый пост.\n"
-                    "Используй только актуальные данные (2023–2026 год).\n"
-                    "Структура поста (ОБЯЗАТЕЛЬНО):\n"
-                    "1. Заголовок с эмодзи (например, 🚨).\n"
-                    "2. Каждый новый смысловой блок начинай с эмодзи (📉, 🏬, 💰, ⚠️).\n"
-                    "3. Ставь двойной перенос между абзацами.\n"
-                    "4. Ключевые цифры выделяй жирным через <b>...</b> (например, <b>17.2 млрд</b>).\n"
-                    "5. В конце — Action Item с ✅ (отдельно).\n"
-                    "6. После Action Item — источник и хештеги (#тег1 #тег2).\n"
-                    "7. Не используй разделители вроде '---'.\n"
-                    "После текста === и описание картинки (англ., 3–4 слова)."
-                )
-            },
-            {
-                "role": "user",
-                "content": f"Напиши пост на тему: {topic}. Используй реальные цифры из отчётов."
-            }
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": f"Напиши пост на тему: {topic}. {financial_text} Стиль: {style}"}
         ],
         "temperature": 0.85,
         "max_tokens": 700
@@ -430,24 +409,142 @@ def generate_post():
             time.sleep(3)
     raise Exception("Не удалось получить ответ")
 
-# ======================== ГЕНЕРАЦИЯ КАРТИНКИ =========================
-def is_image_black(image_path):
-    try:
-        img = Image.open(image_path)
-        if img.width < 50 or img.height < 50:
-            return True
-        img = img.convert('L')
-        pixels = list(img.getdata())
-        avg = sum(pixels) / len(pixels)
-        return avg < 30
-    except:
-        return False
+def get_topic_by_analytics():
+    week_ago = (datetime.now() - timedelta(days=7)).isoformat()
+    rows = execute_query(
+        'SELECT topic, rating, views, reactions FROM posts WHERE status = "published" AND published_at >= ? AND topic IS NOT NULL AND topic != ""',
+        (week_ago,), fetch=True
+    )
+    if not rows:
+        return get_topic_from_news()
+    topic_stats = {}
+    for row in rows:
+        topic = row['topic']
+        rating = row['rating'] or 0
+        views = row['views'] or 0
+        reactions = row['reactions'] or 0
+        score = rating + views * 0.1 + reactions * 0.5
+        topic_stats[topic] = topic_stats.get(topic, 0) + score
+    if not topic_stats:
+        return get_topic_from_news()
+    return max(topic_stats, key=topic_stats.get)
 
-def generate_image(prompt, max_attempts=3):
+def get_topic_from_news():
+    rss_urls = [
+        "https://www.rbc.ru/rss/",
+        "https://www.kommersant.ru/RSS/news.xml",
+        "https://lenta.ru/rss/news"
+    ]
+    keywords = ["ozon", "wildberries", "магнит", "ритейл", "торговля", "нефть", "лукойл"]
+    try:
+        for url in rss_urls:
+            feed = feedparser.parse(url)
+            for entry in feed.entries[:5]:
+                title = entry.title.lower()
+                if any(kw in title for kw in keywords):
+                    summary = entry.summary if hasattr(entry, 'summary') else ""
+                    return f"{entry.title}. {summary[:100]}"
+        return DAY_TOPICS.get(datetime.now().weekday(), DAY_TOPICS[0])
+    except Exception as e:
+        print(f"[WARN] Ошибка RSS: {e}")
+        return DAY_TOPICS.get(datetime.now().weekday(), DAY_TOPICS[0])
+
+# ======================== ОСТАЛЬНЫЕ ВСПОМОГАТЕЛЬНЫЕ =========================
+def clean_text(text):
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+    text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
+    text = re.sub(r'\n\s*\n', '\n\n', text)
+    return text.strip()
+
+def beautify_post(text):
+    if not text:
+        return ""
+    text = re.sub(r'\s+', ' ', text).strip()
+    action_text = ""
+    match = re.search(r'(✅.*?)(?=\s*[A-Z#]|$)', text, re.DOTALL)
+    if not match:
+        match = re.search(r'(Action Item:.*?)(?=\s*[A-Z#]|$)', text, re.DOTALL)
+    if match:
+        action_text = match.group(1).strip()
+        text = text.replace(action_text, '').strip()
+        if not action_text.startswith('✅'):
+            action_text = '✅ ' + action_text
+    sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
+    paragraphs = []
+    i = 0
+    while i < len(sentences):
+        if i+1 < len(sentences):
+            paragraphs.append(sentences[i] + ' ' + sentences[i+1])
+            i += 2
+        else:
+            paragraphs.append(sentences[i])
+            i += 1
+    text = '\n\n'.join(paragraphs)
+    def replacer(m):
+        num = m.group(0)
+        if not re.search(r'\*\*.*?' + re.escape(num) + r'.*?\*\*', text):
+            return f'**{num}**'
+        return num
+    text = re.sub(r'\b(\d+[.,]?\d*)\b', replacer, text)
+    if action_text:
+        hashtag_match = re.search(r'(#\w+(?:\s*#\w+)*)$', text)
+        if hashtag_match:
+            hashtags = hashtag_match.group(1)
+            text = text.replace(hashtags, '').strip()
+            text = text + f'\n\n**{action_text}**\n\n{hashtags}'
+        else:
+            text = text + f'\n\n**{action_text}**'
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text
+
+def split_into_parts(text, max_len=1000):
+    if len(text) <= max_len:
+        return [text]
+    paragraphs = text.split('\n\n')
+    result_parts = []
+    current_part = ""
+    for para in paragraphs:
+        if not para.strip():
+            continue
+        if len(current_part) + len(para) + 2 <= max_len:
+            if current_part:
+                current_part += '\n\n' + para
+            else:
+                current_part = para
+        else:
+            if len(para) > max_len:
+                sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', para) if s.strip()]
+                for sent in sentences:
+                    if len(current_part) + len(sent) + 2 <= max_len:
+                        if current_part:
+                            current_part += ' ' + sent
+                        else:
+                            current_part = sent
+                    else:
+                        if current_part:
+                            result_parts.append(current_part)
+                        current_part = sent
+            else:
+                if current_part:
+                    result_parts.append(current_part)
+                current_part = para
+    if current_part:
+        result_parts.append(current_part)
+    return result_parts if result_parts else [text[:max_len] + "..."]
+
+def generate_image(prompt, image_prompt=None, extra_data=None):
+    # 1.4 Инфографика
+    if extra_data and isinstance(extra_data, dict):
+        data = extra_data.get('data')
+        labels = extra_data.get('labels')
+        if data and labels:
+            img_path = create_infographic(data, labels)
+            if img_path:
+                return img_path
+    # Fallback на Pollinations
     if len(prompt) > 100:
         prompt = prompt[:100]
-
-    for attempt in range(max_attempts):
+    for attempt in range(3):
         try:
             unique = f" {random.randint(1, 100000)}"
             full_prompt = prompt + unique
@@ -456,7 +553,6 @@ def generate_image(prompt, max_attempts=3):
             ts = int(time.time())
             url = f"https://image.pollinations.ai/prompt/{encoded}?width=1200&height=800&seed={seed}&t={ts}"
             print(f"[DEBUG] Pollinations URL (попытка {attempt+1}): {url}")
-
             resp = requests.get(url, timeout=90)
             if resp.status_code == 200:
                 content = resp.content
@@ -466,18 +562,27 @@ def generate_image(prompt, max_attempts=3):
                     continue
                 with open("temp_image.jpg", "wb") as f:
                     f.write(content)
-                if is_image_black("temp_image.jpg"):
-                    print("[WARN] Обнаружено чёрное изображение, пробуем с упрощённым промптом")
-                    os.remove("temp_image.jpg")
-                    prompt = "retail illustration, business, comparison, sarcastic, modern"
-                    continue
+                # Проверка на чёрное изображение
+                try:
+                    img = Image.open("temp_image.jpg")
+                    if img.width < 50 or img.height < 50:
+                        raise Exception("Слишком маленькое изображение")
+                    img = img.convert('L')
+                    pixels = list(img.getdata())
+                    avg = sum(pixels) / len(pixels)
+                    if avg < 30:
+                        print("[WARN] Обнаружено чёрное изображение, пробуем с упрощённым промптом")
+                        os.remove("temp_image.jpg")
+                        prompt = "retail illustration, business, comparison, sarcastic, modern"
+                        continue
+                except:
+                    pass
                 return "temp_image.jpg"
             else:
                 print(f"[WARN] Pollinations вернул {resp.status_code}, попытка {attempt+1}")
         except Exception as e:
             print(f"[WARN] Ошибка Pollinations (попытка {attempt+1}): {e}")
         time.sleep(3)
-
     try:
         print("[DEBUG] Последняя попытка с минимальным промптом")
         url = f"https://image.pollinations.ai/prompt/business%20illustration?width=1200&height=800&seed={random.randint(1,999999)}&t={int(time.time())}"
@@ -485,36 +590,46 @@ def generate_image(prompt, max_attempts=3):
         if resp.status_code == 200 and len(resp.content) > 1000:
             with open("temp_image.jpg", "wb") as f:
                 f.write(resp.content)
-            if not is_image_black("temp_image.jpg"):
-                return "temp_image.jpg"
+            return "temp_image.jpg"
     except:
         pass
-
     print("[ERROR] Все попытки генерации картинки провалились")
     return None
 
-# ======================== ОСТАЛЬНЫЕ ВСПОМОГАТЕЛЬНЫЕ =========================
-def clean_text(text):
-    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-    text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
-    text = re.sub(r'\n\s*\n', '\n\n', text)
-    return text.strip()
-
-# ======================== ПУБЛИКАЦИЯ С parse_mode='HTML' =========================
-def publish_text_only(text):
-    parts = split_into_parts(text, max_len=1000)
-    for part in parts:
+# ======================== ПУБЛИКАЦИЯ =========================
+def send_message(chat_id, text):
+    try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        data = {"chat_id": TELEGRAM_CHAT_ID, "text": part, "parse_mode": "HTML"}
-        resp = requests.post(url, json=data, timeout=30)
-        if resp.status_code != 200:
-            return False
-    return True
+        data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+        requests.post(url, json=data, timeout=10)
+    except Exception as e:
+        print(f"[ERROR] send_message: {e}")
+
+def save_post(session_id, text, image_path, image_prompt, topic):
+    execute_query(
+        'INSERT OR REPLACE INTO posts (session_id, text, image_path, image_prompt, topic, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        (session_id, text, image_path, image_prompt, topic, 'pending', datetime.now().isoformat())
+    )
+
+def get_post(session_id):
+    row = execute_query(
+        'SELECT text, image_path, image_prompt, status, scheduled_publish_time, edit_pending, rating, reposted, message_id, topic FROM posts WHERE session_id = ?',
+        (session_id,), fetchone=True
+    )
+    return row
+
+def update_post_status(session_id, status, scheduled_time=None):
+    if scheduled_time:
+        execute_query(
+            'UPDATE posts SET status = ?, scheduled_publish_time = ?, approved_at = ? WHERE session_id = ?',
+            (status, scheduled_time.isoformat(), datetime.now().isoformat(), session_id)
+        )
+    else:
+        execute_query('UPDATE posts SET status = ? WHERE session_id = ?', (status, session_id))
 
 def send_for_approval_no_image(post_text, topic):
     session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
     save_post(session_id, post_text, "", "", topic)
-
     parts = split_into_parts(post_text, max_len=1000)
     total = len(parts)
     for i, part in enumerate(parts, 1):
@@ -534,20 +649,10 @@ def send_for_approval_no_image(post_text, topic):
                     ]
                 ]
             })
-
-        text_data = {
-            "chat_id": ADMIN_CHAT_ID,
-            "text": caption,
-            "parse_mode": "HTML"
-        }
+        text_data = {"chat_id": ADMIN_CHAT_ID, "text": caption, "parse_mode": "HTML"}
         if reply_markup:
             text_data["reply_markup"] = reply_markup
-
-        resp = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json=text_data,
-            timeout=30
-        )
+        resp = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=text_data, timeout=30)
         if resp.status_code != 200:
             print(f"[ERROR] Ошибка отправки текста (часть {i}): {resp.text}")
             return False
@@ -556,16 +661,10 @@ def send_for_approval_no_image(post_text, topic):
 def publish_to_telegram(text, image_path, session_id=None):
     if not os.path.exists(image_path):
         return False
-
     with open(image_path, "rb") as photo:
         files = {"photo": photo}
         data = {"chat_id": TELEGRAM_CHAT_ID}
-        resp = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
-            files=files,
-            data=data,
-            timeout=30
-        )
+        resp = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto", files=files, data=data, timeout=30)
         if resp.status_code != 200:
             print(f"[ERROR] Ошибка отправки фото: {resp.text}")
             return False
@@ -574,18 +673,13 @@ def publish_to_telegram(text, image_path, session_id=None):
             message_id = msg_data.get('result', {}).get('message_id')
             if message_id:
                 execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (message_id, session_id))
-
     parts = split_into_parts(text, max_len=1000)
     for i, part in enumerate(parts, 1):
         if len(parts) == 1:
             text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": part, "parse_mode": "HTML"}
         else:
             text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": f"📝 Пост (часть {i}/{len(parts)}):\n\n{part}", "parse_mode": "HTML"}
-        resp = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json=text_data,
-            timeout=30
-        )
+        resp = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=text_data, timeout=30)
         if resp.status_code != 200:
             print(f"[ERROR] Ошибка отправки текста (часть {i}): {resp.text}")
             return False
@@ -593,20 +687,13 @@ def publish_to_telegram(text, image_path, session_id=None):
 
 def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
     save_post(session_id, post_text, image_path, image_prompt, topic)
-
     with open(image_path, "rb") as photo:
         files = {"photo": photo}
         data = {"chat_id": ADMIN_CHAT_ID}
-        resp = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
-            files=files,
-            data=data,
-            timeout=30
-        )
+        resp = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto", files=files, data=data, timeout=30)
         if resp.status_code != 200:
             print(f"[ERROR] Ошибка отправки фото на модерацию: {resp.text}")
             return False
-
     parts = split_into_parts(post_text, max_len=1000)
     total = len(parts)
     for i, part in enumerate(parts, 1):
@@ -626,20 +713,10 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
                     ]
                 ]
             })
-
-        text_data = {
-            "chat_id": ADMIN_CHAT_ID,
-            "text": caption,
-            "parse_mode": "HTML"
-        }
+        text_data = {"chat_id": ADMIN_CHAT_ID, "text": caption, "parse_mode": "HTML"}
         if reply_markup:
             text_data["reply_markup"] = reply_markup
-
-        resp = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json=text_data,
-            timeout=30
-        )
+        resp = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=text_data, timeout=30)
         if resp.status_code != 200:
             print(f"[ERROR] Ошибка отправки текста (часть {i}): {resp.text}")
             return False
@@ -653,63 +730,93 @@ def schedule_publish(session_id):
     update_post_status(session_id, 'approved', scheduled_time=publish_time)
     send_message(ADMIN_CHAT_ID, f"✅ Пост одобрен и запланирован на {publish_time.strftime('%d.%m.%Y %H:%M')} МСК.")
 
-def send_message(chat_id, text):
-    try:
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=10)
-    except Exception as e:
-        print(f"[ERROR] send_message: {e}")
+# ======================== ОБРАБОТЧИК КОМАНД АДМИНА (4.1) =========================
+def handle_admin_command(text, chat_id):
+    if text.startswith('/stats'):
+        # 6.1 Статистика
+        rows = execute_query(
+            'SELECT COUNT(*) as total, SUM(CASE WHEN status="published" THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status="rejected" THEN 1 ELSE 0 END) as rejected FROM posts',
+            fetchone=True
+        )
+        msg = f"📊 Статистика:\nВсего постов: {rows['total']}\nОпубликовано: {rows['published']}\nОтклонено: {rows['rejected']}"
+        send_message(chat_id, msg)
+    elif text.startswith('/setprompt'):
+        new_prompt = text.replace('/setprompt', '').strip()
+        if new_prompt:
+            set_prompt('system_prompt', new_prompt)
+            send_message(chat_id, "✅ Промпт обновлён!")
+        else:
+            send_message(chat_id, "❌ Напиши новый промпт после команды, например: /setprompt Ты — автор...")
+    elif text.startswith('/getprompt'):
+        current = get_prompt('system_prompt')
+        send_message(chat_id, f"Текущий промпт:\n\n{current}")
+    elif text.startswith('/generate'):
+        # Запуск генерации вручную
+        send_message(chat_id, "🔄 Запускаю генерацию...")
+        job(auto_publish=False)
+    elif text.startswith('/backup'):
+        backup_db()
+        send_message(chat_id, "✅ Бэкап создан")
+    elif text.startswith('/health'):
+        check_health()
+        send_message(chat_id, "✅ Проверка здоровья выполнена")
 
-# ======================== АВТОПОВТОР И ДАЙДЖЕСТ =========================
-def check_and_repost():
-    cutoff = (datetime.now() - timedelta(days=30)).isoformat()
-    rows = execute_query(
-        'SELECT session_id, text FROM posts WHERE status = \'published\' AND reposted = FALSE AND rating >= 3 AND published_at <= ?',
-        (cutoff,), fetch=True
-    )
-    for row in rows:
-        if publish_text_only(row['text']):
-            execute_query('UPDATE posts SET reposted = TRUE WHERE session_id = ?', (row['session_id'],))
-            print(f"[DEBUG] Повторно опубликован пост {row['session_id']}")
+# ======================== ПОЛЛИНГ ОБНОВЛЕНИЙ =========================
+def poll_updates():
+    offset = 0
+    while True:
+        try:
+            resp = requests.get(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
+                params={"offset": offset, "timeout": 30, "allowed_updates": ["callback_query", "message"]},
+                timeout=35
+            )
+            if resp.status_code != 200:
+                time.sleep(5)
+                continue
+            data = resp.json()
+            if not data.get("ok"):
+                time.sleep(5)
+                continue
+            for update in data.get("result", []):
+                offset = update["update_id"] + 1
+                if "callback_query" in update:
+                    cb = update["callback_query"]
+                    cb_data = cb.get("data")
+                    if cb_data:
+                        chat_id = cb["message"]["chat"]["id"]
+                        message_id = cb["id"]
+                        process_callback(cb_data, chat_id, message_id)
+                        try:
+                            requests.post(
+                                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                json={"callback_query_id": cb["id"], "text": "Обрабатываю..."},
+                                timeout=10
+                            )
+                        except:
+                            pass
+                elif "message" in update and update["message"].get("chat", {}).get("id") == int(ADMIN_CHAT_ID):
+                    chat_id = update["message"]["chat"]["id"]
+                    text = update["message"].get("text", "")
+                    if text.startswith('/'):
+                        handle_admin_command(text, chat_id)
+                    elif chat_id in edit_mode:
+                        session_id = edit_mode.pop(chat_id)
+                        new_text = update["message"].get("text")
+                        if new_text:
+                            update_post_text(session_id, new_text)
+                            post_data = get_post(session_id)
+                            if post_data:
+                                new_sid = f"{int(time.time())}_{random.randint(1000,9999)}"
+                                save_post(new_sid, new_text, post_data["image_path"], post_data["image_prompt"], post_data["topic"])
+                                delete_post(session_id)
+                                send_for_approval(new_text, post_data["image_path"], post_data["image_prompt"], new_sid, post_data["topic"])
+                                send_message(chat_id, "✅ Пост обновлён и отправлен на повторную проверку.")
+        except Exception as e:
+            print(f"[ERROR] poll_updates: {e}")
+            time.sleep(5)
 
-def digest_job():
-    week_ago = (datetime.now() - timedelta(days=7)).isoformat()
-    rows = execute_query(
-        'SELECT text, rating, message_id, views, reactions FROM posts WHERE status = \'published\' AND published_at >= ? ORDER BY rating DESC LIMIT 5',
-        (week_ago,), fetch=True
-    )
-    if not rows:
-        send_message(ADMIN_CHAT_ID, "📊 За неделю нет опубликованных постов.")
-        return
-
-    digest = "📅 **Лучшие посты недели:**\n\n"
-    for i, row in enumerate(rows, 1):
-        short_text = row['text'][:150] + "..." if len(row['text']) > 150 else row['text']
-        views = row['views'] or 0
-        reactions = row['reactions'] or 0
-        if row['message_id'] and (views == 0 and reactions == 0):
-            try:
-                resp = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMessageStatistics", params={"chat_id": TELEGRAM_CHAT_ID, "message_id": row['message_id']}, timeout=10)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if data.get('ok'):
-                        stats = data.get('result', {})
-                        views = stats.get('views', 0)
-                        reactions = sum(r.get('count', 0) for r in stats.get('reactions', []))
-                        execute_query('UPDATE posts SET views = ?, reactions = ? WHERE message_id = ?', (views, reactions, row['message_id']))
-            except:
-                pass
-        digest += f"{i}. {short_text}\n   👁 {views} просмотров, ❤️ {reactions} реакций\n\n"
-    requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": digest, "parse_mode": "HTML"}, timeout=30)
-
-def weekly_report():
-    stats = get_weekly_stats()
-    if stats:
-        msg = f"📊 Еженедельный отчёт:\nОдобрено: {stats['published']}\nОтклонено: {stats['rejected']}\nВсего создано: {stats['total']}"
-    else:
-        msg = "📊 Недостаточно данных."
-    send_message(ADMIN_CHAT_ID, msg)
-
-# ======================== ОБРАБОТЧИК КНОПОК =========================
+# ======================== ПРОЦЕСС КНОПОК =========================
 edit_mode = {}
 
 def process_callback(callback_data, chat_id, message_id):
@@ -730,7 +837,7 @@ def process_callback(callback_data, chat_id, message_id):
         answer_callback(chat_id, message_id, "🔄 Черновик устарел, генерирую новый...")
         try:
             new_text, new_prompt, new_topic = generate_post()
-            new_img = generate_image(new_prompt)
+            new_img = generate_image(new_prompt, extra_data=None)
             if not new_img:
                 send_for_approval_no_image(new_text, new_topic)
                 answer_callback(chat_id, message_id, "✅ Новый пост отправлен (без картинки)")
@@ -753,7 +860,7 @@ def process_callback(callback_data, chat_id, message_id):
         answer_callback(chat_id, message_id, "🔄 Генерирую новый...")
         try:
             new_text, new_prompt, new_topic = generate_post()
-            new_img = generate_image(new_prompt)
+            new_img = generate_image(new_prompt, extra_data=None)
             if not new_img:
                 send_for_approval_no_image(new_text, new_topic)
                 delete_post(session_id)
@@ -778,76 +885,40 @@ def answer_callback(chat_id, message_id, text):
     except:
         pass
 
-# ======================== ПОЛЛИНГ =========================
-def poll_updates():
-    offset = 0
-    while True:
-        try:
-            resp = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates", params={"offset": offset, "timeout": 30, "allowed_updates": ["callback_query", "message"]}, timeout=35)
-            if resp.status_code != 200:
-                time.sleep(5)
-                continue
-            data = resp.json()
-            if not data.get("ok"):
-                time.sleep(5)
-                continue
-            for update in data.get("result", []):
-                offset = update["update_id"] + 1
-                if "callback_query" in update:
-                    cb = update["callback_query"]
-                    cb_data = cb.get("data")
-                    if cb_data:
-                        chat_id = cb["message"]["chat"]["id"]
-                        message_id = cb["id"]
-                        process_callback(cb_data, chat_id, message_id)
-                        try:
-                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery", json={"callback_query_id": cb["id"], "text": "Обрабатываю..."}, timeout=10)
-                        except:
-                            pass
-                elif "message" in update and update["message"].get("chat", {}).get("id") == int(ADMIN_CHAT_ID):
-                    chat_id = update["message"]["chat"]["id"]
-                    if chat_id in edit_mode:
-                        session_id = edit_mode.pop(chat_id)
-                        new_text = update["message"].get("text")
-                        if new_text:
-                            update_post_text(session_id, new_text)
-                            post_data = get_post(session_id)
-                            if post_data:
-                                new_sid = f"{int(time.time())}_{random.randint(1000,9999)}"
-                                save_post(new_sid, new_text, post_data["image_path"], post_data["image_prompt"], post_data["topic"])
-                                delete_post(session_id)
-                                send_for_approval(new_text, post_data["image_path"], post_data["image_prompt"], new_sid, post_data["topic"])
-                                send_message(chat_id, "✅ Пост обновлён и отправлен на повторную проверку.")
-        except Exception as e:
-            print(f"[ERROR] poll_updates: {e}")
-            time.sleep(5)
+def delete_post(session_id):
+    execute_query('DELETE FROM posts WHERE session_id = ?', (session_id,))
 
-# ======================== ПУБЛИКАЦИЯ ЗАПЛАНИРОВАННЫХ =========================
-def publish_scheduled_posts():
-    print(f"[{datetime.now()}] Проверка запланированных постов...")
-    posts = get_approved_posts_to_publish()
-    for p in posts:
-        if publish_to_telegram(p["text"], p["image_path"], p["session_id"]):
-            update_post_status(p["session_id"], 'published')
-            print(f"[{datetime.now()}] ✅ Опубликован {p['session_id']}")
-        else:
-            if publish_text_only(p["text"]):
-                update_post_status(p["session_id"], 'published')
-                print(f"[{datetime.now()}] ✅ Опубликован текст {p['session_id']}")
-            else:
-                print(f"[{datetime.now()}] ❌ Ошибка публикации {p['session_id']}")
+def update_post_text(session_id, new_text):
+    execute_query('UPDATE posts SET text = ? WHERE session_id = ?', (new_text, session_id))
 
 # ======================== ОСНОВНАЯ ЗАДАЧА =========================
 def job(auto_publish=False):
     print(f"[DEBUG] job started at {datetime.now()}")
     send_message(ADMIN_CHAT_ID, f"🔄 Генерация поста начата в {datetime.now().strftime('%H:%M:%S')}")
+    # 4.2 Бэкап при старте (если не делался сегодня)
+    if not os.path.exists("backups"):
+        backup_db()
+    # 6.1 Обновление статистики
+    update_stats()
     check_and_repost()
-    print(f"[DEBUG] check_and_repost done")
     print(f"[{datetime.now()}] Генерация поста...")
     try:
         post_text, image_prompt, topic = generate_post()
         print(f"[DEBUG] post_text получен, длина {len(post_text)}")
-        image_path = generate_image(image_prompt)
+        # 1.1 – финансовая инфографика
+        financials = get_financial_data("OZON")
+        extra_data = None
+        if financials:
+            try:
+                extra_data = {
+                    "data": [float(financials['revenue'].replace(',', '')) if isinstance(financials['revenue'], str) else financials['revenue'],
+                              float(financials['profit'].replace(',', '')) if isinstance(financials['profit'], str) else financials['profit'],
+                              float(financials['ebitda'].replace(',', '')) if isinstance(financials['ebitda'], str) else financials['ebitda']],
+                    "labels": ["Выручка", "Прибыль", "EBITDA"]
+                }
+            except:
+                extra_data = None
+        image_path = generate_image(image_prompt, extra_data=extra_data)
         print(f"[DEBUG] image_path = {image_path}")
         if not image_path:
             print("[WARN] Картинка не сгенерирована, публикую только текст")
@@ -878,6 +949,63 @@ def job(auto_publish=False):
         traceback.print_exc()
         send_message(ADMIN_CHAT_ID, f"❌ Ошибка в job: {str(e)[:100]}")
         raise
+
+def publish_text_only(text):
+    parts = split_into_parts(text, max_len=1000)
+    for part in parts:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        data = {"chat_id": TELEGRAM_CHAT_ID, "text": part, "parse_mode": "HTML"}
+        resp = requests.post(url, json=data, timeout=30)
+        if resp.status_code != 200:
+            return False
+    return True
+
+def check_and_repost():
+    cutoff = (datetime.now() - timedelta(days=30)).isoformat()
+    rows = execute_query(
+        'SELECT session_id, text FROM posts WHERE status = "published" AND reposted = 0 AND rating >= 3 AND published_at <= ?',
+        (cutoff,), fetch=True
+    )
+    for row in rows:
+        if publish_text_only(row['text']):
+            execute_query('UPDATE posts SET reposted = 1 WHERE session_id = ?', (row['session_id'],))
+            print(f"[DEBUG] Повторно опубликован пост {row['session_id']}")
+
+def publish_scheduled_posts():
+    print(f"[{datetime.now()}] Проверка запланированных постов...")
+    now = datetime.now().isoformat()
+    rows = execute_query(
+        'SELECT session_id, text, image_path FROM posts WHERE status = "approved" AND scheduled_publish_time <= ?',
+        (now,), fetch=True
+    )
+    for p in rows:
+        if publish_to_telegram(p["text"], p["image_path"], p["session_id"]):
+            update_post_status(p["session_id"], 'published')
+            print(f"[{datetime.now()}] ✅ Опубликован {p['session_id']}")
+        else:
+            if publish_text_only(p["text"]):
+                update_post_status(p["session_id"], 'published')
+                print(f"[{datetime.now()}] ✅ Опубликован текст {p['session_id']}")
+            else:
+                print(f"[{datetime.now()}] ❌ Ошибка публикации {p['session_id']}")
+
+# ======================== РАСПИСАНИЕ =========================
+schedule.every().day.at("15:00").do(lambda: job(auto_publish=False))  # 18:00 МСК – модерация
+schedule.every().day.at("07:00").do(publish_scheduled_posts)          # 10:00 МСК – публикация
+schedule.every().sunday.at("17:00").do(weekly_report)                # 20:00 МСК – отчёт
+schedule.every().day.at("03:00").do(backup_db)                       # 4.2 Бэкап БД
+schedule.every().sunday.at("20:00").do(collect_questions)            # 2.2 Сбор вопросов
+schedule.every().wednesday.at("10:00").do(publish_answers)           # 2.2 Ответы на вопросы
+schedule.every().hour.do(update_stats)                               # 6.1 Обновление статистики
+
+# ======================== ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ (6.3 – конкурсы, 6.4 – прогноз) =========================
+def weekly_report():
+    stats = execute_query(
+        'SELECT COUNT(*) as total, SUM(CASE WHEN status="published" THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status="rejected" THEN 1 ELSE 0 END) as rejected FROM posts WHERE created_at >= ?',
+        (datetime.now() - timedelta(days=7)).isoformat(), fetchone=True
+    )
+    msg = f"📊 Еженедельный отчёт:\nОдобрено: {stats['published']}\nОтклонено: {stats['rejected']}\nВсего создано: {stats['total']}"
+    send_message(ADMIN_CHAT_ID, msg)
 
 # ======================== ВЕБ-СЕРВЕР =========================
 class HealthHandler(BaseHTTPRequestHandler):
@@ -930,6 +1058,7 @@ def start_health_server():
 
 threading.Thread(target=start_health_server, daemon=True).start()
 
+# ======================== САМОПИНГ =========================
 def keep_alive():
     url = "https://skeptik-bot.onrender.com"
     while True:
@@ -943,12 +1072,7 @@ def keep_alive():
 threading.Thread(target=keep_alive, daemon=True).start()
 threading.Thread(target=poll_updates, daemon=True).start()
 
-# ======================== РАСПИСАНИЕ =========================
-schedule.every().day.at("15:00").do(lambda: job(auto_publish=False))  # 18:00 МСК
-schedule.every().day.at("07:00").do(publish_scheduled_posts)          # 10:00 МСК
-schedule.every().sunday.at("17:00").do(weekly_report)
-schedule.every().sunday.at("17:00").do(digest_job)
-
+# ======================== ЗАПУСК =========================
 print("Бот запущен. Ожидание расписания...")
 print(f"Провайдер: {API_PROVIDER}, Модель: {MODEL_NAME}")
 print("Модерация каждый день в 18:00 МСК, публикация в 10:00 МСК.")
