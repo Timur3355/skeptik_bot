@@ -24,8 +24,8 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-API_PROVIDER = os.getenv("API_PROVIDER", "openai").lower()
-MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-v3")
+API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
+MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
 
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
@@ -56,7 +56,7 @@ PROVIDER_CONFIG = {
     }
 }
 
-config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["openai"])
+config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["openrouter"])
 API_URL = config["url"]
 API_HEADERS_FUNC = config["headers"]
 API_DEFAULT_MODEL = config["default_model"]
@@ -271,14 +271,12 @@ def get_weekly_stats():
     )
     return rows
 
-# ======================== ПРОСТАЯ И НАДЁЖНАЯ ПОСТОБРАБОТКА =========================
+# ======================== ПРОСТАЯ ПОСТОБРАБОТКА =========================
 def beautify_post(text):
     if not text:
         return ""
-    # Убираем лишние пробелы
     text = re.sub(r'\s+', ' ', text).strip()
 
-    # Извлекаем Action Item
     action_text = ""
     match = re.search(r'(✅.*?)(?=\s*[A-Z#]|$)', text, re.DOTALL)
     if not match:
@@ -289,7 +287,6 @@ def beautify_post(text):
         if not action_text.startswith('✅'):
             action_text = '✅ ' + action_text
 
-    # Разбиваем на предложения и группируем по 2
     sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
     paragraphs = []
     i = 0
@@ -302,38 +299,31 @@ def beautify_post(text):
             i += 1
     text = '\n\n'.join(paragraphs)
 
-    # Выделяем числа жирным (любые цифры)
+    # Выделяем числа жирным через Markdown (если не обёрнуты)
     def replacer(m):
         num = m.group(0)
-        if not re.search(r'<b>.*?' + re.escape(num) + r'.*?</b>', text):
-            return f'<b>{num}</b>'
+        if not re.search(r'\*\*.*?' + re.escape(num) + r'.*?\*\*', text):
+            return f'**{num}**'
         return num
     text = re.sub(r'\b(\d+[.,]?\d*)\b', replacer, text)
 
-    # Добавляем Action Item в конец перед хештегами
     if action_text:
         hashtag_match = re.search(r'(#\w+(?:\s*#\w+)*)$', text)
         if hashtag_match:
             hashtags = hashtag_match.group(1)
             text = text.replace(hashtags, '').strip()
-            text = text + f'\n\n<b>{action_text}</b>\n\n{hashtags}'
+            text = text + f'\n\n**{action_text}**\n\n{hashtags}'
         else:
-            text = text + f'\n\n<b>{action_text}</b>'
+            text = text + f'\n\n**{action_text}**'
 
-    # Убираем лишние переносы
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text
 
-# ======================== НОВАЯ ФУНКЦИЯ РАЗБИВКИ (СОХРАНЯЕТ АБЗАЦЫ) =========================
+# ======================== РАЗБИВКА НА ЧАСТИ (СОХРАНЯЕТ АБЗАЦЫ) =========================
 def split_into_parts(text, max_len=1000):
-    """
-    Разбивает текст на части, сохраняя абзацы (двойные переносы).
-    Если абзац длиннее max_len, разбивает его по предложениям и склеивает обратно.
-    """
     if len(text) <= max_len:
         return [text]
 
-    # Разбиваем по двойным переносам на абзацы
     paragraphs = text.split('\n\n')
     result_parts = []
     current_part = ""
@@ -341,14 +331,12 @@ def split_into_parts(text, max_len=1000):
     for para in paragraphs:
         if not para.strip():
             continue
-        # Проверяем, влезет ли абзац целиком
         if len(current_part) + len(para) + 2 <= max_len:
             if current_part:
                 current_part += '\n\n' + para
             else:
                 current_part = para
         else:
-            # Если абзац слишком длинный, разбиваем его по предложениям
             if len(para) > max_len:
                 sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', para) if s.strip()]
                 for sent in sentences:
@@ -362,7 +350,6 @@ def split_into_parts(text, max_len=1000):
                             result_parts.append(current_part)
                         current_part = sent
             else:
-                # Сохраняем текущую часть и начинаем новую с этого абзаца
                 if current_part:
                     result_parts.append(current_part)
                 current_part = para
@@ -370,7 +357,6 @@ def split_into_parts(text, max_len=1000):
     if current_part:
         result_parts.append(current_part)
 
-    # Если по какой-то причине parts пуст, возвращаем оригинал
     return result_parts if result_parts else [text[:max_len] + "..."]
 
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
@@ -393,7 +379,7 @@ def generate_post():
                     "1. Заголовок с эмодзи (например, 🚨).\n"
                     "2. Каждый новый смысловой блок начинай с эмодзи (📉, 🏬, 💰, ⚠️).\n"
                     "3. Ставь двойной перенос между абзацами.\n"
-                    "4. Ключевые цифры выделяй жирным через <b>...</b>.\n"
+                    "4. Ключевые цифры выделяй жирным через **...** (например, **17.2 млрд**).\n"
                     "5. В конце — Action Item с ✅ (отдельно).\n"
                     "6. После Action Item — источник и хештеги (#тег1 #тег2).\n"
                     "7. Не используй разделители вроде '---'.\n"
@@ -406,12 +392,12 @@ def generate_post():
             }
         ],
         "temperature": 0.85,
-        "max_tokens": 500
+        "max_tokens": 700
     }
 
     for attempt in range(3):
         try:
-            response = requests.post(API_URL, headers=headers, json=payload, timeout=60)
+            response = requests.post(API_URL, headers=headers, json=payload, timeout=90)
             if response.status_code != 200:
                 raise Exception(f"API вернул {response.status_code}: {response.text}")
             data = response.json()
@@ -421,6 +407,8 @@ def generate_post():
             if not full_text:
                 raise Exception("Пустой ответ")
             full_text = clean_text(full_text)
+            if not full_text.endswith(('.', '?', '!', '"', ')')):
+                full_text += "... (продолжение в следующем посте)"
             if "===" in full_text:
                 parts = full_text.split("===", 1)
                 post_text = parts[0].strip()
@@ -430,7 +418,6 @@ def generate_post():
                 image_prompt = ""
             if len(image_prompt) < 10:
                 image_prompt = "retail comparison illustration, business graph, sarcastic, modern, colorful"
-            # Применяем постобработку
             post_text = beautify_post(post_text)
             return post_text, image_prompt, topic
         except requests.exceptions.Timeout:
@@ -513,12 +500,12 @@ def clean_text(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
-# ======================== ПУБЛИКАЦИЯ (С parse_mode='HTML') =========================
+# ======================== ПУБЛИКАЦИЯ С parse_mode='MarkdownV2' =========================
 def publish_text_only(text):
     parts = split_into_parts(text, max_len=1000)
     for part in parts:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        data = {"chat_id": TELEGRAM_CHAT_ID, "text": part, "parse_mode": "HTML"}
+        data = {"chat_id": TELEGRAM_CHAT_ID, "text": part, "parse_mode": "MarkdownV2"}
         resp = requests.post(url, json=data, timeout=30)
         if resp.status_code != 200:
             return False
@@ -551,7 +538,7 @@ def send_for_approval_no_image(post_text, topic):
         text_data = {
             "chat_id": ADMIN_CHAT_ID,
             "text": caption,
-            "parse_mode": "HTML"
+            "parse_mode": "MarkdownV2"
         }
         if reply_markup:
             text_data["reply_markup"] = reply_markup
@@ -591,9 +578,9 @@ def publish_to_telegram(text, image_path, session_id=None):
     parts = split_into_parts(text, max_len=1000)
     for i, part in enumerate(parts, 1):
         if len(parts) == 1:
-            text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": part, "parse_mode": "HTML"}
+            text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": part, "parse_mode": "MarkdownV2"}
         else:
-            text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": f"📝 Пост (часть {i}/{len(parts)}):\n\n{part}", "parse_mode": "HTML"}
+            text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": f"📝 Пост (часть {i}/{len(parts)}):\n\n{part}", "parse_mode": "MarkdownV2"}
         resp = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             json=text_data,
@@ -643,7 +630,7 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
         text_data = {
             "chat_id": ADMIN_CHAT_ID,
             "text": caption,
-            "parse_mode": "HTML"
+            "parse_mode": "MarkdownV2"
         }
         if reply_markup:
             text_data["reply_markup"] = reply_markup
@@ -668,7 +655,7 @@ def schedule_publish(session_id):
 
 def send_message(chat_id, text):
     try:
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=10)
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "MarkdownV2"}, timeout=10)
     except Exception as e:
         print(f"[ERROR] send_message: {e}")
 
@@ -712,7 +699,7 @@ def digest_job():
             except:
                 pass
         digest += f"{i}. {short_text}\n   👁 {views} просмотров, ❤️ {reactions} реакций\n\n"
-    requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": digest, "parse_mode": "Markdown"}, timeout=30)
+    requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": digest, "parse_mode": "MarkdownV2"}, timeout=30)
 
 def weekly_report():
     stats = get_weekly_stats()
