@@ -271,7 +271,7 @@ def get_weekly_stats():
     )
     return rows
 
-# ======================== ПРОСТАЯ ПОСТОБРАБОТКА =========================
+# ======================== ПРОСТАЯ ПОСТОБРАБОТКА (HTML) =========================
 def beautify_post(text):
     if not text:
         return ""
@@ -299,11 +299,11 @@ def beautify_post(text):
             i += 1
     text = '\n\n'.join(paragraphs)
 
-    # Выделяем числа жирным через Markdown (если не обёрнуты)
+    # Выделяем числа жирным через HTML
     def replacer(m):
         num = m.group(0)
-        if not re.search(r'\*\*.*?' + re.escape(num) + r'.*?\*\*', text):
-            return f'**{num}**'
+        if not re.search(r'<b>.*?' + re.escape(num) + r'.*?</b>', text):
+            return f'<b>{num}</b>'
         return num
     text = re.sub(r'\b(\d+[.,]?\d*)\b', replacer, text)
 
@@ -312,9 +312,9 @@ def beautify_post(text):
         if hashtag_match:
             hashtags = hashtag_match.group(1)
             text = text.replace(hashtags, '').strip()
-            text = text + f'\n\n**{action_text}**\n\n{hashtags}'
+            text = text + f'\n\n<b>{action_text}</b>\n\n{hashtags}'
         else:
-            text = text + f'\n\n**{action_text}**'
+            text = text + f'\n\n<b>{action_text}</b>'
 
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text
@@ -379,7 +379,7 @@ def generate_post():
                     "1. Заголовок с эмодзи (например, 🚨).\n"
                     "2. Каждый новый смысловой блок начинай с эмодзи (📉, 🏬, 💰, ⚠️).\n"
                     "3. Ставь двойной перенос между абзацами.\n"
-                    "4. Ключевые цифры выделяй жирным через **...** (например, **17.2 млрд**).\n"
+                    "4. Ключевые цифры выделяй жирным через <b>...</b> (например, <b>17.2 млрд</b>).\n"
                     "5. В конце — Action Item с ✅ (отдельно).\n"
                     "6. После Action Item — источник и хештеги (#тег1 #тег2).\n"
                     "7. Не используй разделители вроде '---'.\n"
@@ -500,12 +500,12 @@ def clean_text(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
-# ======================== ПУБЛИКАЦИЯ С parse_mode='MarkdownV2' =========================
+# ======================== ПУБЛИКАЦИЯ С parse_mode='HTML' =========================
 def publish_text_only(text):
     parts = split_into_parts(text, max_len=1000)
     for part in parts:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        data = {"chat_id": TELEGRAM_CHAT_ID, "text": part, "parse_mode": "MarkdownV2"}
+        data = {"chat_id": TELEGRAM_CHAT_ID, "text": part, "parse_mode": "HTML"}
         resp = requests.post(url, json=data, timeout=30)
         if resp.status_code != 200:
             return False
@@ -538,7 +538,7 @@ def send_for_approval_no_image(post_text, topic):
         text_data = {
             "chat_id": ADMIN_CHAT_ID,
             "text": caption,
-            "parse_mode": "MarkdownV2"
+            "parse_mode": "HTML"
         }
         if reply_markup:
             text_data["reply_markup"] = reply_markup
@@ -578,9 +578,9 @@ def publish_to_telegram(text, image_path, session_id=None):
     parts = split_into_parts(text, max_len=1000)
     for i, part in enumerate(parts, 1):
         if len(parts) == 1:
-            text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": part, "parse_mode": "MarkdownV2"}
+            text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": part, "parse_mode": "HTML"}
         else:
-            text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": f"📝 Пост (часть {i}/{len(parts)}):\n\n{part}", "parse_mode": "MarkdownV2"}
+            text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": f"📝 Пост (часть {i}/{len(parts)}):\n\n{part}", "parse_mode": "HTML"}
         resp = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             json=text_data,
@@ -630,7 +630,7 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
         text_data = {
             "chat_id": ADMIN_CHAT_ID,
             "text": caption,
-            "parse_mode": "MarkdownV2"
+            "parse_mode": "HTML"
         }
         if reply_markup:
             text_data["reply_markup"] = reply_markup
@@ -655,7 +655,7 @@ def schedule_publish(session_id):
 
 def send_message(chat_id, text):
     try:
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "MarkdownV2"}, timeout=10)
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=10)
     except Exception as e:
         print(f"[ERROR] send_message: {e}")
 
@@ -699,7 +699,7 @@ def digest_job():
             except:
                 pass
         digest += f"{i}. {short_text}\n   👁 {views} просмотров, ❤️ {reactions} реакций\n\n"
-    requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": digest, "parse_mode": "MarkdownV2"}, timeout=30)
+    requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": digest, "parse_mode": "HTML"}, timeout=30)
 
 def weekly_report():
     stats = get_weekly_stats()
