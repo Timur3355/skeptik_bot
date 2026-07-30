@@ -70,7 +70,7 @@ def get_topic_from_news():
         "https://www.kommersant.ru/RSS/news.xml",
         "https://lenta.ru/rss/news"
     ]
-    keywords = ["ozon", "wildberries", "магнит", "ритейл", "торговля", "нефть", "лукойл", "lukoil"]
+    keywords = ["ozon", "wildberries", "магнит", "ритейл", "торговля", "нефть", "лукойл"]
     try:
         for url in rss_urls:
             feed = feedparser.parse(url)
@@ -273,19 +273,12 @@ def get_weekly_stats():
 
 # ======================== ПРОСТАЯ И НАДЁЖНАЯ ПОСТОБРАБОТКА =========================
 def beautify_post(text):
-    """
-    Универсальное форматирование:
-    - Разбивает на абзацы по точкам с заглавной буквы.
-    - Выделяет числа жирным.
-    - Отделяет Action Item.
-    """
     if not text:
         return ""
-
-    # 1. Убираем лишние пробелы и переносы
+    # Убираем лишние пробелы
     text = re.sub(r'\s+', ' ', text).strip()
 
-    # 2. Извлекаем Action Item (ищем ✅ или "Action Item")
+    # Извлекаем Action Item
     action_text = ""
     match = re.search(r'(✅.*?)(?=\s*[A-Z#]|$)', text, re.DOTALL)
     if not match:
@@ -296,46 +289,29 @@ def beautify_post(text):
         if not action_text.startswith('✅'):
             action_text = '✅ ' + action_text
 
-    # 3. Разбиваем на абзацы по точкам с заглавной буквы
-    # Ищем позиции точек, за которыми пробел и заглавная буква
-    sentences = []
-    pos = 0
-    for m in re.finditer(r'(?<=[.!?])\s+(?=[A-ZА-Я])', text):
-        sentences.append(text[pos:m.start()].strip())
-        pos = m.end()
-    if pos < len(text):
-        sentences.append(text[pos:].strip())
-
-    # Если не нашли заглавных букв, пробуем просто по точкам
-    if len(sentences) <= 1:
-        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
-
-    # 4. Группируем по 2-3 предложения в абзац
+    # Разбиваем на предложения и группируем по 2
+    sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
     paragraphs = []
     i = 0
     while i < len(sentences):
-        if i + 2 < len(sentences):
-            para = sentences[i] + ' ' + sentences[i+1]
+        if i+1 < len(sentences):
+            paragraphs.append(sentences[i] + ' ' + sentences[i+1])
             i += 2
         else:
-            para = sentences[i]
+            paragraphs.append(sentences[i])
             i += 1
-        paragraphs.append(para)
-
     text = '\n\n'.join(paragraphs)
 
-    # 5. Выделяем числа жирным (любые цифры с запятыми/точками)
+    # Выделяем числа жирным (любые цифры)
     def replacer(m):
         num = m.group(0)
-        # Проверяем, что уже не в тегах
         if not re.search(r'<b>.*?' + re.escape(num) + r'.*?</b>', text):
             return f'<b>{num}</b>'
         return num
     text = re.sub(r'\b(\d+[.,]?\d*)\b', replacer, text)
 
-    # 6. Добавляем Action Item в конец
+    # Добавляем Action Item в конец перед хештегами
     if action_text:
-        # Если есть хештеги, ставим Action Item перед ними
         hashtag_match = re.search(r'(#\w+(?:\s*#\w+)*)$', text)
         if hashtag_match:
             hashtags = hashtag_match.group(1)
@@ -344,9 +320,58 @@ def beautify_post(text):
         else:
             text = text + f'\n\n<b>{action_text}</b>'
 
-    # 7. Убираем лишние переносы
+    # Убираем лишние переносы
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text
+
+# ======================== НОВАЯ ФУНКЦИЯ РАЗБИВКИ (СОХРАНЯЕТ АБЗАЦЫ) =========================
+def split_into_parts(text, max_len=1000):
+    """
+    Разбивает текст на части, сохраняя абзацы (двойные переносы).
+    Если абзац длиннее max_len, разбивает его по предложениям и склеивает обратно.
+    """
+    if len(text) <= max_len:
+        return [text]
+
+    # Разбиваем по двойным переносам на абзацы
+    paragraphs = text.split('\n\n')
+    result_parts = []
+    current_part = ""
+
+    for para in paragraphs:
+        if not para.strip():
+            continue
+        # Проверяем, влезет ли абзац целиком
+        if len(current_part) + len(para) + 2 <= max_len:
+            if current_part:
+                current_part += '\n\n' + para
+            else:
+                current_part = para
+        else:
+            # Если абзац слишком длинный, разбиваем его по предложениям
+            if len(para) > max_len:
+                sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', para) if s.strip()]
+                for sent in sentences:
+                    if len(current_part) + len(sent) + 2 <= max_len:
+                        if current_part:
+                            current_part += ' ' + sent
+                        else:
+                            current_part = sent
+                    else:
+                        if current_part:
+                            result_parts.append(current_part)
+                        current_part = sent
+            else:
+                # Сохраняем текущую часть и начинаем новую с этого абзаца
+                if current_part:
+                    result_parts.append(current_part)
+                current_part = para
+
+    if current_part:
+        result_parts.append(current_part)
+
+    # Если по какой-то причине parts пуст, возвращаем оригинал
+    return result_parts if result_parts else [text[:max_len] + "..."]
 
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
@@ -405,7 +430,7 @@ def generate_post():
                 image_prompt = ""
             if len(image_prompt) < 10:
                 image_prompt = "retail comparison illustration, business graph, sarcastic, modern, colorful"
-            # Применяем простую и надёжную постобработку
+            # Применяем постобработку
             post_text = beautify_post(post_text)
             return post_text, image_prompt, topic
         except requests.exceptions.Timeout:
@@ -488,30 +513,9 @@ def clean_text(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
-def split_into_sentences(text):
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    return [s.strip() for s in sentences if s.strip()]
-
-def split_into_parts(text, max_len=800):
-    sentences = split_into_sentences(text)
-    parts = []
-    current = ""
-    for sentence in sentences:
-        if len(current) + len(sentence) + 1 <= max_len:
-            current += sentence + " "
-        else:
-            if current:
-                parts.append(current.strip())
-            current = sentence + " "
-    if current:
-        parts.append(current.strip())
-    if not parts:
-        parts = [text[:max_len] + "..."]
-    return parts
-
 # ======================== ПУБЛИКАЦИЯ (С parse_mode='HTML') =========================
 def publish_text_only(text):
-    parts = split_into_parts(text, max_len=800)
+    parts = split_into_parts(text, max_len=1000)
     for part in parts:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         data = {"chat_id": TELEGRAM_CHAT_ID, "text": part, "parse_mode": "HTML"}
@@ -524,7 +528,7 @@ def send_for_approval_no_image(post_text, topic):
     session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
     save_post(session_id, post_text, "", "", topic)
 
-    parts = split_into_parts(post_text, max_len=800)
+    parts = split_into_parts(post_text, max_len=1000)
     total = len(parts)
     for i, part in enumerate(parts, 1):
         if total == 1:
@@ -584,7 +588,7 @@ def publish_to_telegram(text, image_path, session_id=None):
             if message_id:
                 execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (message_id, session_id))
 
-    parts = split_into_parts(text, max_len=800)
+    parts = split_into_parts(text, max_len=1000)
     for i, part in enumerate(parts, 1):
         if len(parts) == 1:
             text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": part, "parse_mode": "HTML"}
@@ -616,7 +620,7 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
             print(f"[ERROR] Ошибка отправки фото на модерацию: {resp.text}")
             return False
 
-    parts = split_into_parts(post_text, max_len=800)
+    parts = split_into_parts(post_text, max_len=1000)
     total = len(parts)
     for i, part in enumerate(parts, 1):
         if total == 1:
