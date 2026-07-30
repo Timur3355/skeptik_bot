@@ -271,59 +271,71 @@ def get_weekly_stats():
     )
     return rows
 
-# ======================== УЛУЧШЕННАЯ ПОСТОБРАБОТКА =========================
+# ======================== ПРОСТАЯ И НАДЁЖНАЯ ПОСТОБРАБОТКА =========================
 def beautify_post(text):
     """
-    Принудительное форматирование поста:
-    - Разбивает на абзацы по предложениям (не разрывает сокращения).
-    - Выделяет числа, проценты, валюты жирным.
-    - Отделяет Action Item (✅) в отдельный абзац.
-    - Убирает лишние пробелы и переносы.
+    Универсальное форматирование:
+    - Разбивает на абзацы по точкам с заглавной буквы.
+    - Выделяет числа жирным.
+    - Отделяет Action Item.
     """
-    # 0. Убираем лишние пробелы и переносы
+    if not text:
+        return ""
+
+    # 1. Убираем лишние пробелы и переносы
     text = re.sub(r'\s+', ' ', text).strip()
 
-    # 1. Извлекаем Action Item (ищем ✅ или "Action Item")
+    # 2. Извлекаем Action Item (ищем ✅ или "Action Item")
     action_text = ""
-    action_match = re.search(r'(✅.*?)(?=\s*[A-Z#]|$)', text, re.DOTALL)
-    if action_match:
-        action_text = action_match.group(1).strip()
+    match = re.search(r'(✅.*?)(?=\s*[A-Z#]|$)', text, re.DOTALL)
+    if not match:
+        match = re.search(r'(Action Item:.*?)(?=\s*[A-Z#]|$)', text, re.DOTALL)
+    if match:
+        action_text = match.group(1).strip()
         text = text.replace(action_text, '').strip()
-    else:
-        # Если нет ✅, ищем "Action Item"
-        action_match = re.search(r'(Action Item:.*?)(?=\s*[A-Z#]|$)', text, re.DOTALL)
-        if action_match:
-            action_text = "✅ " + action_match.group(1).strip()
-            text = text.replace(action_match.group(1), '').strip()
+        if not action_text.startswith('✅'):
+            action_text = '✅ ' + action_text
 
-    # 2. Разбиваем на абзацы по предложениям
-    # Игнорируем точки в сокращениях (млрд., руб., и т.д.)
-    sentences = re.split(r'(?<=[.!?])\s+(?=[A-ZА-Я0-9])', text)
-    if len(sentences) > 1:
-        # Группируем по 2 предложения в абзац
-        paragraphs = []
-        for i in range(0, len(sentences), 2):
-            para = ' '.join(sentences[i:i+2])
-            paragraphs.append(para)
-        text = '\n\n'.join(paragraphs)
-    else:
-        # Если одно предложение – оставляем как есть
-        text = text
+    # 3. Разбиваем на абзацы по точкам с заглавной буквы
+    # Ищем позиции точек, за которыми пробел и заглавная буква
+    sentences = []
+    pos = 0
+    for m in re.finditer(r'(?<=[.!?])\s+(?=[A-ZА-Я])', text):
+        sentences.append(text[pos:m.start()].strip())
+        pos = m.end()
+    if pos < len(text):
+        sentences.append(text[pos:].strip())
 
-    # 3. Выделяем числа, проценты и валюты жирным
-    # Паттерн: цифры с плавающей точкой, с единицами измерения
-    number_pattern = r'\b(\d+[.,]?\d*\s*(?:%|₽|\$|руб|млрд|млн|тыс|миллиардов|миллионов|тысяч|штук|единиц)?)\b'
-    def replacer(match):
-        num = match.group(0)
-        # Проверяем, не обёрнуто ли уже в <b>
+    # Если не нашли заглавных букв, пробуем просто по точкам
+    if len(sentences) <= 1:
+        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
+
+    # 4. Группируем по 2-3 предложения в абзац
+    paragraphs = []
+    i = 0
+    while i < len(sentences):
+        if i + 2 < len(sentences):
+            para = sentences[i] + ' ' + sentences[i+1]
+            i += 2
+        else:
+            para = sentences[i]
+            i += 1
+        paragraphs.append(para)
+
+    text = '\n\n'.join(paragraphs)
+
+    # 5. Выделяем числа жирным (любые цифры с запятыми/точками)
+    def replacer(m):
+        num = m.group(0)
+        # Проверяем, что уже не в тегах
         if not re.search(r'<b>.*?' + re.escape(num) + r'.*?</b>', text):
             return f'<b>{num}</b>'
         return num
-    text = re.sub(number_pattern, replacer, text)
+    text = re.sub(r'\b(\d+[.,]?\d*)\b', replacer, text)
 
-    # 4. Добавляем Action Item обратно
+    # 6. Добавляем Action Item в конец
     if action_text:
-        # Если в тексте уже есть хештеги, добавляем после них
+        # Если есть хештеги, ставим Action Item перед ними
         hashtag_match = re.search(r'(#\w+(?:\s*#\w+)*)$', text)
         if hashtag_match:
             hashtags = hashtag_match.group(1)
@@ -332,7 +344,7 @@ def beautify_post(text):
         else:
             text = text + f'\n\n<b>{action_text}</b>'
 
-    # 5. Убираем повторяющиеся пустые строки
+    # 7. Убираем лишние переносы
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text
 
@@ -351,15 +363,15 @@ def generate_post():
                     "Ты — автор канала «Скептик с EBITDA».\n"
                     "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
                     "НЕ выводи <think>, рассуждения — только готовый пост.\n"
-                    "ВАЖНО: Используй только актуальные данные из последних отчётов (2023–2026 год).\n"
+                    "Используй только актуальные данные (2023–2026 год).\n"
                     "Структура поста (ОБЯЗАТЕЛЬНО):\n"
                     "1. Заголовок с эмодзи (например, 🚨).\n"
                     "2. Каждый новый смысловой блок начинай с эмодзи (📉, 🏬, 💰, ⚠️).\n"
-                    "3. Между абзацами ставь ДВОЙНОЙ ПЕРЕНОС (пустую строку).\n"
-                    "4. Ключевые цифры выделяй жирным через <b>...</b> (например, <b>10,4%</b>).\n"
-                    "5. В конце — чёткий Action Item с ✅ (обязательно отдельно).\n"
+                    "3. Ставь двойной перенос между абзацами.\n"
+                    "4. Ключевые цифры выделяй жирным через <b>...</b>.\n"
+                    "5. В конце — Action Item с ✅ (отдельно).\n"
                     "6. После Action Item — источник и хештеги (#тег1 #тег2).\n"
-                    "7. Не используй разделители вроде '---' или '***'.\n"
+                    "7. Не используй разделители вроде '---'.\n"
                     "После текста === и описание картинки (англ., 3–4 слова)."
                 )
             },
@@ -369,7 +381,7 @@ def generate_post():
             }
         ],
         "temperature": 0.85,
-        "max_tokens": 550
+        "max_tokens": 500
     }
 
     for attempt in range(3):
@@ -393,7 +405,7 @@ def generate_post():
                 image_prompt = ""
             if len(image_prompt) < 10:
                 image_prompt = "retail comparison illustration, business graph, sarcastic, modern, colorful"
-            # Применяем усиленную постобработку
+            # Применяем простую и надёжную постобработку
             post_text = beautify_post(post_text)
             return post_text, image_prompt, topic
         except requests.exceptions.Timeout:
@@ -480,7 +492,7 @@ def split_into_sentences(text):
     sentences = re.split(r'(?<=[.!?])\s+', text)
     return [s.strip() for s in sentences if s.strip()]
 
-def split_into_parts(text, max_len=1000):
+def split_into_parts(text, max_len=800):
     sentences = split_into_sentences(text)
     parts = []
     current = ""
@@ -499,7 +511,7 @@ def split_into_parts(text, max_len=1000):
 
 # ======================== ПУБЛИКАЦИЯ (С parse_mode='HTML') =========================
 def publish_text_only(text):
-    parts = split_into_parts(text, max_len=1000)
+    parts = split_into_parts(text, max_len=800)
     for part in parts:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         data = {"chat_id": TELEGRAM_CHAT_ID, "text": part, "parse_mode": "HTML"}
@@ -512,7 +524,7 @@ def send_for_approval_no_image(post_text, topic):
     session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
     save_post(session_id, post_text, "", "", topic)
 
-    parts = split_into_parts(post_text, max_len=1000)
+    parts = split_into_parts(post_text, max_len=800)
     total = len(parts)
     for i, part in enumerate(parts, 1):
         if total == 1:
@@ -572,7 +584,7 @@ def publish_to_telegram(text, image_path, session_id=None):
             if message_id:
                 execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (message_id, session_id))
 
-    parts = split_into_parts(text, max_len=1000)
+    parts = split_into_parts(text, max_len=800)
     for i, part in enumerate(parts, 1):
         if len(parts) == 1:
             text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": part, "parse_mode": "HTML"}
@@ -604,7 +616,7 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
             print(f"[ERROR] Ошибка отправки фото на модерацию: {resp.text}")
             return False
 
-    parts = split_into_parts(post_text, max_len=1000)
+    parts = split_into_parts(post_text, max_len=800)
     total = len(parts)
     for i, part in enumerate(parts, 1):
         if total == 1:
