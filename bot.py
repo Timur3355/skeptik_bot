@@ -192,7 +192,6 @@ def set_prompt(name, content):
 def update_stats():
     if stats:
         return stats.update_stats()
-    # Обновляем просмотры и реакции для необработанных постов
     rows = execute_query(
         'SELECT session_id, message_id FROM posts WHERE status = \'published\' AND message_id IS NOT NULL AND views = 0',
         fetch=True
@@ -214,14 +213,12 @@ def update_stats():
                     )
                     # Сохраняем время публикации для тепловой карты
                     if DATABASE_URL:
-                        # PostgreSQL
                         execute_query(
                             'INSERT INTO publish_times (post_id, publish_hour, publish_weekday, views, reactions) '
                             'SELECT id, EXTRACT(HOUR FROM created_at)::int, EXTRACT(DOW FROM created_at)::int, %s, %s FROM posts WHERE session_id = %s',
                             (views, reactions, row['session_id'])
                         )
                     else:
-                        # SQLite
                         execute_query(
                             'INSERT INTO publish_times (post_id, publish_hour, publish_weekday, views, reactions) '
                             'SELECT id, strftime("%H", created_at), strftime("%w", created_at), ?, ? FROM posts WHERE session_id = ?',
@@ -237,23 +234,27 @@ def get_db_connection():
         from psycopg2.extras import RealDictCursor
         return psycopg2.connect(DATABASE_URL, sslmode='require')
     else:
-        return sqlite3.connect(DB_PATH)
+        import sqlite3
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row  # чтобы возвращать Row объекты, которые ведут себя как словари
+        return conn
 
 def execute_query(query, params=None, fetch=False, fetchone=False):
     conn = get_db_connection()
     cur = conn.cursor()
     if DATABASE_URL:
         query = query.replace('?', '%s')
-    else:
-        # Для SQLite устанавливаем row_factory, чтобы возвращать Row объекты
-        conn.row_factory = sqlite3.Row
+        if fetch or fetchone:
+            # Для PostgreSQL используем RealDictCursor уже установлен в get_db_connection
+            pass
     cur.execute(query, params or ())
     if fetch:
-        # Для SQLite преобразуем Row в dict
         if DATABASE_URL:
             result = cur.fetchall()
         else:
-            result = [dict(row) for row in cur.fetchall()]
+            # Для SQLite Row объекты преобразуем в dict
+            rows = cur.fetchall()
+            result = [dict(row) for row in rows]
     elif fetchone:
         row = cur.fetchone()
         if DATABASE_URL:
