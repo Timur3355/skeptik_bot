@@ -182,7 +182,7 @@ def get_prompt(name='system_prompt'):
     if prompt_manager:
         return prompt_manager.get_prompt(name)
     row = execute_query('SELECT content FROM prompts WHERE name = ?', (name,), fetchone=True)
-    return row[0] if row else None
+    return row['content'] if row else None
 
 def set_prompt(name, content):
     if prompt_manager:
@@ -192,6 +192,7 @@ def set_prompt(name, content):
 def update_stats():
     if stats:
         return stats.update_stats()
+    # Обновляем просмотры и реакции для необработанных постов
     rows = execute_query(
         'SELECT session_id, message_id FROM posts WHERE status = \'published\' AND message_id IS NOT NULL AND views = 0',
         fetch=True
@@ -211,11 +212,21 @@ def update_stats():
                         'UPDATE posts SET views = ?, reactions = ? WHERE session_id = ?',
                         (views, reactions, row['session_id'])
                     )
-                    execute_query(
-                        'INSERT INTO publish_times (post_id, publish_hour, publish_weekday, views, reactions) '
-                        'SELECT id, strftime("%H", created_at), strftime("%w", created_at), ?, ? FROM posts WHERE session_id = ?',
-                        (views, reactions, row['session_id'])
-                    )
+                    # Сохраняем время публикации для тепловой карты
+                    if DATABASE_URL:
+                        # PostgreSQL
+                        execute_query(
+                            'INSERT INTO publish_times (post_id, publish_hour, publish_weekday, views, reactions) '
+                            'SELECT id, EXTRACT(HOUR FROM created_at)::int, EXTRACT(DOW FROM created_at)::int, %s, %s FROM posts WHERE session_id = %s',
+                            (views, reactions, row['session_id'])
+                        )
+                    else:
+                        # SQLite
+                        execute_query(
+                            'INSERT INTO publish_times (post_id, publish_hour, publish_weekday, views, reactions) '
+                            'SELECT id, strftime("%H", created_at), strftime("%w", created_at), ?, ? FROM posts WHERE session_id = ?',
+                            (views, reactions, row['session_id'])
+                        )
         except Exception as e:
             print(f"[ERROR] Ошибка обновления статистики: {e}")
 
@@ -233,11 +244,22 @@ def execute_query(query, params=None, fetch=False, fetchone=False):
     cur = conn.cursor()
     if DATABASE_URL:
         query = query.replace('?', '%s')
+    else:
+        # Для SQLite устанавливаем row_factory, чтобы возвращать Row объекты
+        conn.row_factory = sqlite3.Row
     cur.execute(query, params or ())
     if fetch:
-        result = cur.fetchall()
+        # Для SQLite преобразуем Row в dict
+        if DATABASE_URL:
+            result = cur.fetchall()
+        else:
+            result = [dict(row) for row in cur.fetchall()]
     elif fetchone:
-        result = cur.fetchone()
+        row = cur.fetchone()
+        if DATABASE_URL:
+            result = row
+        else:
+            result = dict(row) if row else None
     else:
         result = None
     conn.commit()
@@ -979,12 +1001,12 @@ def publish_text_only(text):
 def check_and_repost():
     cutoff = (datetime.now() - timedelta(days=30)).isoformat()
     rows = execute_query(
-        'SELECT session_id, text FROM posts WHERE status = \'published\' AND reposted = 0 AND rating >= 3 AND published_at <= ?',
+        'SELECT session_id, text FROM posts WHERE status = \'published\' AND reposted = FALSE AND rating >= 3 AND published_at <= ?',
         (cutoff,), fetch=True
     )
     for row in rows:
         if publish_text_only(row['text']):
-            execute_query('UPDATE posts SET reposted = 1 WHERE session_id = ?', (row['session_id'],))
+            execute_query('UPDATE posts SET reposted = TRUE WHERE session_id = ?', (row['session_id'],))
             print(f"[DEBUG] Повторно опубликован пост {row['session_id']}")
 
 def publish_scheduled_posts():
