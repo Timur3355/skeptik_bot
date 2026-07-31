@@ -193,7 +193,7 @@ def update_stats():
     if stats:
         return stats.update_stats()
     rows = execute_query(
-        'SELECT session_id, message_id FROM posts WHERE status = "published" AND message_id IS NOT NULL AND views = 0',
+        'SELECT session_id, message_id FROM posts WHERE status = \'published\' AND message_id IS NOT NULL AND views = 0',
         fetch=True
     )
     for row in rows:
@@ -436,7 +436,7 @@ def generate_post():
 def get_topic_by_analytics():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
-        'SELECT topic, rating, views, reactions FROM posts WHERE status = "published" AND published_at >= ? AND topic IS NOT NULL AND topic != ""',
+        'SELECT topic, rating, views, reactions FROM posts WHERE status = \'published\' AND published_at >= ? AND topic IS NOT NULL AND topic != \'\'',
         (week_ago,), fetch=True
     )
     if not rows:
@@ -755,7 +755,7 @@ def schedule_publish(session_id):
 def handle_admin_command(text, chat_id):
     if text.startswith('/stats'):
         rows = execute_query(
-            'SELECT COUNT(*) as total, SUM(CASE WHEN status="published" THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status="rejected" THEN 1 ELSE 0 END) as rejected FROM posts',
+            'SELECT COUNT(*) as total, SUM(CASE WHEN status=\'published\' THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status=\'rejected\' THEN 1 ELSE 0 END) as rejected FROM posts',
             fetchone=True
         )
         msg = f"📊 Статистика:\nВсего постов: {rows['total']}\nОпубликовано: {rows['published']}\nОтклонено: {rows['rejected']}"
@@ -979,7 +979,7 @@ def publish_text_only(text):
 def check_and_repost():
     cutoff = (datetime.now() - timedelta(days=30)).isoformat()
     rows = execute_query(
-        'SELECT session_id, text FROM posts WHERE status = "published" AND reposted = 0 AND rating >= 3 AND published_at <= ?',
+        'SELECT session_id, text FROM posts WHERE status = \'published\' AND reposted = 0 AND rating >= 3 AND published_at <= ?',
         (cutoff,), fetch=True
     )
     for row in rows:
@@ -991,7 +991,7 @@ def publish_scheduled_posts():
     print(f"[{datetime.now()}] Проверка запланированных постов...")
     now = datetime.now().isoformat()
     rows = execute_query(
-        'SELECT session_id, text, image_path FROM posts WHERE status = "approved" AND scheduled_publish_time <= ?',
+        'SELECT session_id, text, image_path FROM posts WHERE status = \'approved\' AND scheduled_publish_time <= ?',
         (now,), fetch=True
     )
     for p in rows:
@@ -1008,7 +1008,7 @@ def publish_scheduled_posts():
 # ======================== ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ =========================
 def weekly_report():
     stats = execute_query(
-        'SELECT COUNT(*) as total, SUM(CASE WHEN status="published" THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status="rejected" THEN 1 ELSE 0 END) as rejected FROM posts WHERE created_at >= ?',
+        'SELECT COUNT(*) as total, SUM(CASE WHEN status=\'published\' THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status=\'rejected\' THEN 1 ELSE 0 END) as rejected FROM posts WHERE created_at >= ?',
         (datetime.now() - timedelta(days=7)).isoformat(), fetchone=True
     )
     msg = f"📊 Еженедельный отчёт:\nОдобрено: {stats['published']}\nОтклонено: {stats['rejected']}\nВсего создано: {stats['total']}"
@@ -1079,7 +1079,6 @@ threading.Thread(target=keep_alive, daemon=True).start()
 threading.Thread(target=poll_updates, daemon=True).start()
 
 # ======================== РАСПИСАНИЕ И ЗАПУСК =========================
-# Все расписания – после определения всех функций
 schedule.every().day.at("15:00").do(lambda: job(auto_publish=False))  # 18:00 МСК
 schedule.every().day.at("07:00").do(publish_scheduled_posts)          # 10:00 МСК
 schedule.every().sunday.at("17:00").do(weekly_report)
