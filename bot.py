@@ -231,29 +231,28 @@ def update_stats():
 def get_db_connection():
     if DATABASE_URL:
         import psycopg2
-        from psycopg2.extras import RealDictCursor
         return psycopg2.connect(DATABASE_URL, sslmode='require')
     else:
         import sqlite3
         conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row  # чтобы возвращать Row объекты, которые ведут себя как словари
+        conn.row_factory = sqlite3.Row
         return conn
 
 def execute_query(query, params=None, fetch=False, fetchone=False):
     conn = get_db_connection()
-    cur = conn.cursor()
+    if DATABASE_URL:
+        from psycopg2.extras import RealDictCursor
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+    else:
+        cur = conn.cursor()
     if DATABASE_URL:
         query = query.replace('?', '%s')
-        if fetch or fetchone:
-            # Для PostgreSQL используем RealDictCursor уже установлен в get_db_connection
-            pass
     cur.execute(query, params or ())
     if fetch:
+        rows = cur.fetchall()
         if DATABASE_URL:
-            result = cur.fetchall()
+            result = rows
         else:
-            # Для SQLite Row объекты преобразуем в dict
-            rows = cur.fetchall()
             result = [dict(row) for row in rows]
     elif fetchone:
         row = cur.fetchone()
