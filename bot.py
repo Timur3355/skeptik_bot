@@ -187,7 +187,18 @@ def get_prompt(name='system_prompt'):
 def set_prompt(name, content):
     if prompt_manager:
         return prompt_manager.set_prompt(name, content)
-    execute_query('REPLACE INTO prompts (name, content) VALUES (?, ?)', (name, content))
+    if DATABASE_URL:
+        # PostgreSQL
+        query = '''
+            INSERT INTO prompts (name, content) VALUES (%s, %s)
+            ON CONFLICT (name) DO UPDATE SET content = EXCLUDED.content
+        '''
+        params = (name, content)
+    else:
+        # SQLite
+        query = 'REPLACE INTO prompts (name, content) VALUES (?, ?)'
+        params = (name, content)
+    execute_query(query, params)
 
 def update_stats():
     if stats:
@@ -649,10 +660,25 @@ def send_message(chat_id, text):
         print(f"[ERROR] send_message: {e}")
 
 def save_post(session_id, text, image_path, image_prompt, topic):
-    execute_query(
-        'INSERT OR REPLACE INTO posts (session_id, text, image_path, image_prompt, topic, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        (session_id, text, image_path, image_prompt, topic, 'pending', datetime.now().isoformat())
-    )
+    if DATABASE_URL:
+        # PostgreSQL
+        query = '''
+            INSERT INTO posts (session_id, text, image_path, image_prompt, topic, status, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (session_id) DO UPDATE SET
+                text = EXCLUDED.text,
+                image_path = EXCLUDED.image_path,
+                image_prompt = EXCLUDED.image_prompt,
+                topic = EXCLUDED.topic,
+                status = EXCLUDED.status,
+                created_at = EXCLUDED.created_at
+        '''
+        params = (session_id, text, image_path, image_prompt, topic, 'pending', datetime.now().isoformat())
+    else:
+        # SQLite
+        query = 'INSERT OR REPLACE INTO posts (session_id, text, image_path, image_prompt, topic, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        params = (session_id, text, image_path, image_prompt, topic, 'pending', datetime.now().isoformat())
+    execute_query(query, params)
 
 def get_post(session_id):
     row = execute_query(
