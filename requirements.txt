@@ -3,14 +3,6 @@ schedule
 pytz
 feedparser
 Pillow
-psycopg2-binary  # если используете PostgreSQL
 pytrends
-alpha_vantage
 matplotlib
-flask
-scikit-learn
-
-
-
-
-
+psycopg2-binary
