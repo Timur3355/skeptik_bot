@@ -188,14 +188,9 @@ def set_prompt(name, content):
     if prompt_manager:
         return prompt_manager.set_prompt(name, content)
     if DATABASE_URL:
-        # PostgreSQL
-        query = '''
-            INSERT INTO prompts (name, content) VALUES (%s, %s)
-            ON CONFLICT (name) DO UPDATE SET content = EXCLUDED.content
-        '''
+        query = 'INSERT INTO prompts (name, content) VALUES (%s, %s) ON CONFLICT (name) DO UPDATE SET content = EXCLUDED.content'
         params = (name, content)
     else:
-        # SQLite
         query = 'REPLACE INTO prompts (name, content) VALUES (?, ?)'
         params = (name, content)
     execute_query(query, params)
@@ -222,7 +217,6 @@ def update_stats():
                         'UPDATE posts SET views = ?, reactions = ? WHERE session_id = ?',
                         (views, reactions, row['session_id'])
                     )
-                    # Сохраняем время публикации для тепловой карты
                     if DATABASE_URL:
                         execute_query(
                             'INSERT INTO publish_times (post_id, publish_hour, publish_weekday, views, reactions) '
@@ -328,18 +322,16 @@ def init_db():
         default_prompt = (
             "Ты — автор канала «Скептик с EBITDA».\n"
             "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
-            "НЕ выводи <think>, рассуждения — только готовый пост.\n"
-            "Используй только актуальные данные (2023–2026 год).\n"
-            "Структура поста (ОБЯЗАТЕЛЬНО):\n"
-            "1. Заголовок с эмодзи (например, 🚨).\n"
-            "2. Каждый новый смысловой блок начинай с эмодзи (📉, 🏬, 💰, ⚠️).\n"
-            "3. Ставь двойной перенос между абзацами.\n"
-            "4. Ключевые цифры выделяй жирным через **...** (например, **17.2 млрд**).\n"
-            "5. В конце — Action Item с ✅ (отдельно).\n"
-            "6. После Action Item — источник и хештеги (#тег1 #тег2).\n"
-            "7. Не используй разделители вроде '---'.\n"
-            "8. Включи цитату из отчёта или интервью топ-менеджера.\n"
-            "После текста === и описание картинки (англ., 3–4 слова)."
+            "Пост должен быть КОРОТКИМ: максимум 500 символов (3–4 абзаца).\n"
+            "Используй ТОЛЬКО свежие новости (за последние 2–3 месяца). Если данных нет – укажи это.\n"
+            "Структура:\n"
+            "1. Заголовок с эмодзи.\n"
+            "2. Каждый абзац начинай с нового эмодзи.\n"
+            "3. Между абзацами – пустая строка.\n"
+            "4. Ключевые цифры выделяй жирным через <b>...</b>.\n"
+            "5. В конце – Action Item с ✅ (отдельно).\n"
+            "6. Источник и хештеги.\n"
+            "НЕ используй устаревшие данные (2023 год – только если это аналитика трендов)."
         )
         cur.execute('''
             INSERT INTO prompts (name, content) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING
@@ -388,9 +380,23 @@ def init_db():
                 FOREIGN KEY(post_id) REFERENCES posts(id)
             )
         ''')
+        default_prompt_sqlite = (
+            "Ты — автор канала «Скептик с EBITDA».\n"
+            "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
+            "Пост должен быть КОРОТКИМ: максимум 500 символов (3–4 абзаца).\n"
+            "Используй ТОЛЬКО свежие новости (за последние 2–3 месяца). Если данных нет – укажи это.\n"
+            "Структура:\n"
+            "1. Заголовок с эмодзи.\n"
+            "2. Каждый абзац начинай с нового эмодзи.\n"
+            "3. Между абзацами – пустая строка.\n"
+            "4. Ключевые цифры выделяй жирным через <b>...</b>.\n"
+            "5. В конце – Action Item с ✅ (отдельно).\n"
+            "6. Источник и хештеги.\n"
+            "НЕ используй устаревшие данные (2023 год – только если это аналитика трендов)."
+        )
         cur.execute('''
             INSERT OR IGNORE INTO prompts (name, content) VALUES (?, ?)
-        ''', ('system_prompt', default_prompt))
+        ''', ('system_prompt', default_prompt_sqlite))
     conn.commit()
     cur.close()
     conn.close()
@@ -418,7 +424,7 @@ def generate_post():
 
     system_content = get_prompt('system_prompt')
     if not system_content:
-        system_content = default_prompt
+        system_content = default_prompt_sqlite
 
     headers = API_HEADERS_FUNC(DEEPSEEK_API_KEY)
     payload = {
@@ -428,7 +434,7 @@ def generate_post():
             {"role": "user", "content": f"Напиши пост на тему: {topic}. {financial_text} Стиль: {style}"}
         ],
         "temperature": 0.85,
-        "max_tokens": 700
+        "max_tokens": 350  # короткие посты
     }
 
     for attempt in range(3):
@@ -539,8 +545,8 @@ def beautify_post(text):
     text = '\n\n'.join(paragraphs)
     def replacer(m):
         num = m.group(0)
-        if not re.search(r'\*\*.*?' + re.escape(num) + r'.*?\*\*', text):
-            return f'**{num}**'
+        if not re.search(r'<b>.*?' + re.escape(num) + r'.*?</b>', text):
+            return f'<b>{num}</b>'
         return num
     text = re.sub(r'\b(\d+[.,]?\d*)\b', replacer, text)
     if action_text:
@@ -548,13 +554,13 @@ def beautify_post(text):
         if hashtag_match:
             hashtags = hashtag_match.group(1)
             text = text.replace(hashtags, '').strip()
-            text = text + f'\n\n**{action_text}**\n\n{hashtags}'
+            text = text + f'\n\n<b>{action_text}</b>\n\n{hashtags}'
         else:
-            text = text + f'\n\n**{action_text}**'
+            text = text + f'\n\n<b>{action_text}</b>'
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text
 
-def split_into_parts(text, max_len=1000):
+def split_into_parts(text, max_len=1000):  # оставляем как было – 1000 символов
     if len(text) <= max_len:
         return [text]
     paragraphs = text.split('\n\n')
@@ -661,7 +667,6 @@ def send_message(chat_id, text):
 
 def save_post(session_id, text, image_path, image_prompt, topic):
     if DATABASE_URL:
-        # PostgreSQL
         query = '''
             INSERT INTO posts (session_id, text, image_path, image_prompt, topic, status, created_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
@@ -675,7 +680,6 @@ def save_post(session_id, text, image_path, image_prompt, topic):
         '''
         params = (session_id, text, image_path, image_prompt, topic, 'pending', datetime.now().isoformat())
     else:
-        # SQLite
         query = 'INSERT OR REPLACE INTO posts (session_id, text, image_path, image_prompt, topic, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
         params = (session_id, text, image_path, image_prompt, topic, 'pending', datetime.now().isoformat())
     execute_query(query, params)
@@ -699,7 +703,7 @@ def update_post_status(session_id, status, scheduled_time=None):
 def send_for_approval_no_image(post_text, topic):
     session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
     save_post(session_id, post_text, "", "", topic)
-    parts = split_into_parts(post_text, max_len=1000)
+    parts = split_into_parts(post_text, max_len=1000)  # оставляем 1000
     total = len(parts)
     for i, part in enumerate(parts, 1):
         if total == 1:
@@ -763,7 +767,7 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
         if resp.status_code != 200:
             print(f"[ERROR] Ошибка отправки фото на модерацию: {resp.text}")
             return False
-    parts = split_into_parts(post_text, max_len=1000)
+    parts = split_into_parts(post_text, max_len=1000)  # оставляем 1000
     total = len(parts)
     for i, part in enumerate(parts, 1):
         if total == 1:
