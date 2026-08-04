@@ -17,87 +17,68 @@ import pytz
 import feedparser
 from PIL import Image
 
-# ======================== УЛУЧШЕНИЯ (ВСТРОЕННЫЕ) =========================
-# 1.1 Финансовые API (если есть ключ ALPHA_VANTAGE_KEY)
-ALPHA_VANTAGE_KEY = os.getenv("ALPHA_VANTAGE_KEY")
-def get_financial_data(symbol="OZON"):
-    if not ALPHA_VANTAGE_KEY:
-        return None
-    try:
-        url = f"https://www.alphavantage.co/query?function=OVERVIEW&symbol={symbol}&apikey={ALPHA_VANTAGE_KEY}"
-        resp = requests.get(url, timeout=10)
-        data = resp.json()
-        return {
-            "revenue": data.get("RevenueTTM", "N/A"),
-            "profit": data.get("ProfitMargin", "N/A"),
-            "ebitda": data.get("EBITDA", "N/A")
-        }
-    except:
-        return None
-
-# 1.2 Разнообразие форматов
-def select_format():
-    weekday = datetime.now().weekday()
-    formats = ["мем", "новость", "аналитика", "мем", "аналитика", "новость", "мем"]
-    return formats[weekday % len(formats)]
-
-# 1.3 Тренды Google (если установлен pytrends)
+# ======================== ИМПОРТ МОДУЛЕЙ (ЕСЛИ ОНИ ЕСТЬ) =========================
 try:
-    from pytrends.request import TrendReq
-    def get_trending_topic():
-        try:
-            pytrends = TrendReq(hl='ru-RU', tz=180)
-            trending = pytrends.trending_searches(pn='russia')
-            for topic in trending[0].values[:5]:
-                if any(kw in topic.lower() for kw in ["ozon", "wildberries", "магнит", "ритейл", "бизнес"]):
-                    return topic
-            return None
-        except:
-            return None
+    from modules import trends
 except ImportError:
-    def get_trending_topic():
-        return None
+    trends = None
+    print("[WARN] Модуль trends не найден, тренды Google недоступны")
 
-# 1.4 Инфографика (если установлен matplotlib)
 try:
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
-    def create_infographic(data, labels, title="Ключевые показатели"):
-        try:
-            fig, ax = plt.subplots(figsize=(8, 5))
-            colors = ['#2ecc71', '#e74c3c', '#3498db']
-            bars = ax.bar(labels, data, color=colors[:len(data)])
-            ax.set_title(title, fontsize=14, fontweight='bold')
-            ax.set_ylabel('Значение', fontsize=10)
-            ax.grid(axis='y', linestyle='--', alpha=0.7)
-            for bar in bars:
-                height = bar.get_height()
-                ax.text(bar.get_x() + bar.get_width()/2., height + 0.1,
-                        f'{height:.1f}', ha='center', va='bottom', fontsize=9)
-            buf = io.BytesIO()
-            plt.tight_layout()
-            plt.savefig(buf, format='png', dpi=100)
-            buf.seek(0)
-            plt.close()
-            img = Image.open(buf)
-            path = "temp_infographic.png"
-            img.save(path)
-            return path
-        except:
-            return None
+    from modules import image_enhancer
 except ImportError:
-    def create_infographic(data, labels, title="Ключевые показатели"):
-        return None
+    image_enhancer = None
+    print("[WARN] Модуль image_enhancer не найден, инфографика недоступна")
 
-# 1.5 Цитаты и 1.6 Структура – уже встроены в системный промпт
+try:
+    from modules import prompt_manager
+except ImportError:
+    prompt_manager = None
+    print("[WARN] Модуль prompt_manager не найден, управление промптами из БД недоступно")
 
-# ======================== ОСНОВНАЯ КОНФИГУРАЦИЯ =========================
+try:
+    from modules import financial_api
+except ImportError:
+    financial_api = None
+    print("[WARN] Модуль financial_api не найден, финансовые API недоступны")
+
+try:
+    from modules import format_selector
+except ImportError:
+    format_selector = None
+    print("[WARN] Модуль format_selector не найден, выбор формата поста недоступен")
+
+try:
+    from modules import qa_collector
+except ImportError:
+    qa_collector = None
+    print("[WARN] Модуль qa_collector не найден, сбор вопросов недоступен")
+
+try:
+    from modules import backup
+except ImportError:
+    backup = None
+    print("[WARN] Модуль backup не найден, автоматический бэкап недоступен")
+
+try:
+    from modules import monitor
+except ImportError:
+    monitor = None
+    print("[WARN] Модуль monitor не найден, мониторинг состояния недоступен")
+
+try:
+    from modules import stats
+except ImportError:
+    stats = None
+    print("[WARN] Модуль stats не найден, расширенная статистика недоступна")
+
+# ======================== КОНФИГУРАЦИЯ =========================
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
+ALPHA_VANTAGE_KEY = os.getenv("ALPHA_VANTAGE_KEY")
 
 API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
 MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat:free")
@@ -139,25 +120,57 @@ API_DEFAULT_MODEL = config["default_model"]
 if not MODEL_NAME:
     MODEL_NAME = API_DEFAULT_MODEL
 
-# ======================== 4.2 АВТОБЭКАП БД =========================
+# ======================== УЛУЧШЕНИЯ (FALLBACK) =========================
+def get_financial_data(symbol="OZON"):
+    if financial_api:
+        return financial_api.get_financial_data(symbol)
+    return None
+
+def select_format():
+    if format_selector:
+        return format_selector.select_format()
+    weekday = datetime.now().weekday()
+    formats = ["мем", "новость", "аналитика", "мем", "аналитика", "новость", "мем"]
+    return formats[weekday % len(formats)]
+
+def get_trending_topic():
+    if trends:
+        return trends.get_trending_topic()
+    return None
+
+def create_infographic(data, labels, title="Ключевые показатели"):
+    if image_enhancer:
+        return image_enhancer.create_infographic(data, labels, title)
+    return None
+
+def collect_questions():
+    if qa_collector:
+        return qa_collector.collect_questions()
+    print("[INFO] Сбор вопросов не настроен")
+
+def publish_answers():
+    if qa_collector:
+        return qa_collector.publish_answers()
+    print("[INFO] Публикация ответов на вопросы не настроена")
+
 def backup_db():
+    if backup:
+        return backup.backup_db()
     try:
         if not os.path.exists("backups"):
             os.makedirs("backups")
-        if DATABASE_URL:
-            print("[INFO] Бэкап PostgreSQL не реализован, используйте встроенные средства Render")
-            return
         import shutil
-        src = DB_PATH
-        if os.path.exists(src):
+        src = "posts.db" if not DATABASE_URL else None
+        if src and os.path.exists(src):
             dst = f"backups/posts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
             shutil.copyfile(src, dst)
             print(f"[INFO] Бэкап создан: {dst}")
     except Exception as e:
         print(f"[ERROR] Ошибка бэкапа: {e}")
 
-# ======================== 4.3 МОНИТОРИНГ =========================
 def check_health():
+    if monitor:
+        return monitor.check_health()
     try:
         resp = requests.get("https://skeptik-bot.onrender.com/", timeout=10)
         if resp.status_code != 200:
@@ -165,12 +178,15 @@ def check_health():
     except Exception as e:
         send_message(ADMIN_CHAT_ID, f"❌ Ошибка мониторинга: {e}")
 
-# ======================== 4.4 УПРАВЛЕНИЕ ПРОМПТАМИ =========================
 def get_prompt(name='system_prompt'):
+    if prompt_manager:
+        return prompt_manager.get_prompt(name)
     row = execute_query('SELECT content FROM prompts WHERE name = ?', (name,), fetchone=True)
     return row['content'] if row else None
 
 def set_prompt(name, content):
+    if prompt_manager:
+        return prompt_manager.set_prompt(name, content)
     if DATABASE_URL:
         query = 'INSERT INTO prompts (name, content) VALUES (%s, %s) ON CONFLICT (name) DO UPDATE SET content = EXCLUDED.content'
         params = (name, content)
@@ -179,8 +195,9 @@ def set_prompt(name, content):
         params = (name, content)
     execute_query(query, params)
 
-# ======================== 6.1 СТАТИСТИКА =========================
 def update_stats():
+    if stats:
+        return stats.update_stats()
     rows = execute_query(
         'SELECT session_id, message_id FROM posts WHERE status = \'published\' AND message_id IS NOT NULL AND views = 0',
         fetch=True
@@ -200,7 +217,6 @@ def update_stats():
                         'UPDATE posts SET views = ?, reactions = ? WHERE session_id = ?',
                         (views, reactions, row['session_id'])
                     )
-                    # 6.2 Тепловая карта – сохраняем время публикации
                     if DATABASE_URL:
                         execute_query(
                             'INSERT INTO publish_times (post_id, publish_hour, publish_weekday, views, reactions) '
@@ -215,23 +231,6 @@ def update_stats():
                         )
         except Exception as e:
             print(f"[ERROR] Ошибка обновления статистики: {e}")
-
-# ======================== 6.3 ОТЧЁТ ПО КОНКУРЕНТАМ (ЗАГЛУШКА) =========================
-def competitor_report():
-    # Можно реализовать парсинг публичных каналов
-    pass
-
-# ======================== 6.4 ПРОГНОЗ РОСТА (ЗАГЛУШКА) =========================
-def growth_forecast():
-    # Можно реализовать на основе истории подписчиков
-    pass
-
-# ======================== 2.2 ЕЖЕНЕДЕЛЬНЫЙ «ЧАС ВОПРОСОВ» (ЗАГЛУШКА) =========================
-def collect_questions():
-    print("[INFO] Сбор вопросов не настроен")
-
-def publish_answers():
-    print("[INFO] Публикация ответов на вопросы не настроена")
 
 # ======================== БАЗА ДАННЫХ =========================
 def get_db_connection():
@@ -404,169 +403,13 @@ def init_db():
 
 init_db()
 
-# ======================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =========================
-def send_message(chat_id, text):
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
-        requests.post(url, json=data, timeout=10)
-    except Exception as e:
-        print(f"[ERROR] send_message: {e}")
-
-def clean_text(text):
-    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-    text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
-    text = re.sub(r'\n\s*\n', '\n\n', text)
-    return text.strip()
-
-def beautify_post(text):
-    if not text:
-        return ""
-    text = re.sub(r'\s+', ' ', text).strip()
-    action_text = ""
-    match = re.search(r'(✅.*?)(?=\s*[A-Z#]|$)', text, re.DOTALL)
-    if not match:
-        match = re.search(r'(Action Item:.*?)(?=\s*[A-Z#]|$)', text, re.DOTALL)
-    if match:
-        action_text = match.group(1).strip()
-        text = text.replace(action_text, '').strip()
-        if not action_text.startswith('✅'):
-            action_text = '✅ ' + action_text
-    sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
-    paragraphs = []
-    i = 0
-    while i < len(sentences):
-        if i+1 < len(sentences):
-            paragraphs.append(sentences[i] + ' ' + sentences[i+1])
-            i += 2
-        else:
-            paragraphs.append(sentences[i])
-            i += 1
-    text = '\n\n'.join(paragraphs)
-    def replacer(m):
-        num = m.group(0)
-        if not re.search(r'<b>.*?' + re.escape(num) + r'.*?</b>', text):
-            return f'<b>{num}</b>'
-        return num
-    text = re.sub(r'\b(\d+[.,]?\d*)\b', replacer, text)
-    if action_text:
-        hashtag_match = re.search(r'(#\w+(?:\s*#\w+)*)$', text)
-        if hashtag_match:
-            hashtags = hashtag_match.group(1)
-            text = text.replace(hashtags, '').strip()
-            text = text + f'\n\n<b>{action_text}</b>\n\n{hashtags}'
-        else:
-            text = text + f'\n\n<b>{action_text}</b>'
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    return text
-
-def split_into_parts(text, max_len=500):
-    if len(text) <= max_len:
-        return [text]
-    # Разбиваем по абзацам, потом по предложениям
-    paragraphs = text.split('\n\n')
-    parts = []
-    current = ""
-    for para in paragraphs:
-        if len(current) + len(para) + 2 <= max_len:
-            current += para + "\n\n"
-        else:
-            if current:
-                parts.append(current.strip())
-            current = para + "\n\n"
-    if current:
-        parts.append(current.strip())
-    # Если всё ещё длинные части, режем по предложениям
-    final_parts = []
-    for part in parts:
-        if len(part) <= max_len:
-            final_parts.append(part)
-        else:
-            sentences = re.split(r'(?<=[.!?])\s+', part)
-            chunk = ""
-            for sent in sentences:
-                if len(chunk) + len(sent) + 1 <= max_len:
-                    chunk += sent + " "
-                else:
-                    if chunk:
-                        final_parts.append(chunk.strip())
-                    chunk = sent + " "
-            if chunk:
-                final_parts.append(chunk.strip())
-    return final_parts if final_parts else [text[:max_len] + "..."]
-
-def generate_image(prompt, extra_data=None):
-    # 1.4 Инфографика (если есть данные)
-    if extra_data and isinstance(extra_data, dict):
-        data = extra_data.get('data')
-        labels = extra_data.get('labels')
-        if data and labels:
-            img_path = create_infographic(data, labels)
-            if img_path:
-                return img_path
-    # Fallback на Pollinations
-    if len(prompt) > 100:
-        prompt = prompt[:100]
-    for attempt in range(3):
-        try:
-            unique = f" {random.randint(1, 100000)}"
-            full_prompt = prompt + unique
-            encoded = urllib.parse.quote(full_prompt)
-            seed = random.randint(1, 999999)
-            ts = int(time.time())
-            url = f"https://image.pollinations.ai/prompt/{encoded}?width=1200&height=800&seed={seed}&t={ts}"
-            print(f"[DEBUG] Pollinations URL (попытка {attempt+1}): {url}")
-            resp = requests.get(url, timeout=90)
-            if resp.status_code == 200:
-                content = resp.content
-                if len(content) < 1000:
-                    print(f"[WARN] Слишком маленький файл ({len(content)} байт), повтор")
-                    time.sleep(2)
-                    continue
-                with open("temp_image.jpg", "wb") as f:
-                    f.write(content)
-                try:
-                    img = Image.open("temp_image.jpg")
-                    if img.width < 50 or img.height < 50:
-                        raise Exception("Слишком маленькое изображение")
-                    img = img.convert('L')
-                    pixels = list(img.getdata())
-                    avg = sum(pixels) / len(pixels)
-                    if avg < 30:
-                        print("[WARN] Обнаружено чёрное изображение, пробуем с упрощённым промптом")
-                        os.remove("temp_image.jpg")
-                        prompt = "retail illustration, business, comparison, sarcastic, modern"
-                        continue
-                except:
-                    pass
-                return "temp_image.jpg"
-            else:
-                print(f"[WARN] Pollinations вернул {resp.status_code}, попытка {attempt+1}")
-        except Exception as e:
-            print(f"[WARN] Ошибка Pollinations (попытка {attempt+1}): {e}")
-        time.sleep(3)
-    try:
-        print("[DEBUG] Последняя попытка с минимальным промптом")
-        url = f"https://image.pollinations.ai/prompt/business%20illustration?width=1200&height=800&seed={random.randint(1,999999)}&t={int(time.time())}"
-        resp = requests.get(url, timeout=90)
-        if resp.status_code == 200 and len(resp.content) > 1000:
-            with open("temp_image.jpg", "wb") as f:
-                f.write(resp.content)
-            return "temp_image.jpg"
-    except:
-        pass
-    print("[ERROR] Все попытки генерации картинки провалились")
-    return None
-
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
-    # 1.3 Тренды
     topic = get_trending_topic()
     if not topic:
         topic = get_topic_by_analytics()
     print(f"[DEBUG] Выбрана тема: {topic}")
 
-    # 1.2 Формат
     fmt = select_format()
     style = {
         "мем": "Саркастичный, с юмором, короткий (до 300 символов).",
@@ -574,16 +417,14 @@ def generate_post():
         "аналитика": "Глубокий разбор цифр, трендов, выводы."
     }.get(fmt, "Дерзкий, саркастичный, с реальными цифрами.")
 
-    # 1.1 Финансовые данные
     financials = get_financial_data("OZON")
     financial_text = ""
     if financials:
         financial_text = f"Используй актуальные цифры: выручка {financials['revenue']}, прибыль {financials['profit']}, EBITDA {financials['ebitda']}."
 
-    # 4.4 Системный промпт из БД
     system_content = get_prompt('system_prompt')
     if not system_content:
-        system_content = default_prompt
+        system_content = default_prompt_sqlite
 
     headers = API_HEADERS_FUNC(DEEPSEEK_API_KEY)
     payload = {
@@ -593,7 +434,7 @@ def generate_post():
             {"role": "user", "content": f"Напиши пост на тему: {topic}. {financial_text} Стиль: {style}"}
         ],
         "temperature": 0.85,
-        "max_tokens": 350
+        "max_tokens": 600
     }
 
     for attempt in range(3):
@@ -671,7 +512,159 @@ def get_topic_from_news():
         print(f"[WARN] Ошибка RSS: {e}")
         return DAY_TOPICS.get(datetime.now().weekday(), DAY_TOPICS[0])
 
+# ======================== ОСТАЛЬНЫЕ ВСПОМОГАТЕЛЬНЫЕ =========================
+def clean_text(text):
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+    text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
+    text = re.sub(r'\n\s*\n', '\n\n', text)
+    return text.strip()
+
+def beautify_post(text):
+    if not text:
+        return ""
+    text = re.sub(r'\s+', ' ', text).strip()
+    action_text = ""
+    match = re.search(r'(✅.*?)(?=\s*[A-Z#]|$)', text, re.DOTALL)
+    if not match:
+        match = re.search(r'(Action Item:.*?)(?=\s*[A-Z#]|$)', text, re.DOTALL)
+    if match:
+        action_text = match.group(1).strip()
+        text = text.replace(action_text, '').strip()
+        if not action_text.startswith('✅'):
+            action_text = '✅ ' + action_text
+    sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
+    paragraphs = []
+    i = 0
+    while i < len(sentences):
+        if i+1 < len(sentences):
+            paragraphs.append(sentences[i] + ' ' + sentences[i+1])
+            i += 2
+        else:
+            paragraphs.append(sentences[i])
+            i += 1
+    text = '\n\n'.join(paragraphs)
+    def replacer(m):
+        num = m.group(0)
+        if not re.search(r'<b>.*?' + re.escape(num) + r'.*?</b>', text):
+            return f'<b>{num}</b>'
+        return num
+    text = re.sub(r'\b(\d+[.,]?\d*)\b', replacer, text)
+    if action_text:
+        hashtag_match = re.search(r'(#\w+(?:\s*#\w+)*)$', text)
+        if hashtag_match:
+            hashtags = hashtag_match.group(1)
+            text = text.replace(hashtags, '').strip()
+            text = text + f'\n\n<b>{action_text}</b>\n\n{hashtags}'
+        else:
+            text = text + f'\n\n<b>{action_text}</b>'
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text
+
+def split_into_parts(text, max_len=3000):
+    if len(text) <= max_len:
+        return [text]
+    paragraphs = text.split('\n\n')
+    result_parts = []
+    current_part = ""
+    for para in paragraphs:
+        if not para.strip():
+            continue
+        if len(current_part) + len(para) + 2 <= max_len:
+            if current_part:
+                current_part += '\n\n' + para
+            else:
+                current_part = para
+        else:
+            if len(para) > max_len:
+                sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', para) if s.strip()]
+                for sent in sentences:
+                    if len(current_part) + len(sent) + 2 <= max_len:
+                        if current_part:
+                            current_part += ' ' + sent
+                        else:
+                            current_part = sent
+                    else:
+                        if current_part:
+                            result_parts.append(current_part)
+                        current_part = sent
+            else:
+                if current_part:
+                    result_parts.append(current_part)
+                current_part = para
+    if current_part:
+        result_parts.append(current_part)
+    return result_parts if result_parts else [text[:max_len] + "..."]
+
+def generate_image(prompt, image_prompt=None, extra_data=None):
+    if extra_data and isinstance(extra_data, dict):
+        data = extra_data.get('data')
+        labels = extra_data.get('labels')
+        if data and labels:
+            img_path = create_infographic(data, labels)
+            if img_path:
+                return img_path
+    if len(prompt) > 100:
+        prompt = prompt[:100]
+    for attempt in range(3):
+        try:
+            unique = f" {random.randint(1, 100000)}"
+            full_prompt = prompt + unique
+            encoded = urllib.parse.quote(full_prompt)
+            seed = random.randint(1, 999999)
+            ts = int(time.time())
+            url = f"https://image.pollinations.ai/prompt/{encoded}?width=1200&height=800&seed={seed}&t={ts}"
+            print(f"[DEBUG] Pollinations URL (попытка {attempt+1}): {url}")
+            resp = requests.get(url, timeout=90)
+            if resp.status_code == 200:
+                content = resp.content
+                if len(content) < 1000:
+                    print(f"[WARN] Слишком маленький файл ({len(content)} байт), повтор")
+                    time.sleep(2)
+                    continue
+                with open("temp_image.jpg", "wb") as f:
+                    f.write(content)
+                try:
+                    img = Image.open("temp_image.jpg")
+                    if img.width < 50 or img.height < 50:
+                        raise Exception("Слишком маленькое изображение")
+                    img = img.convert('L')
+                    pixels = list(img.getdata())
+                    avg = sum(pixels) / len(pixels)
+                    if avg < 30:
+                        print("[WARN] Обнаружено чёрное изображение, пробуем с упрощённым промптом")
+                        os.remove("temp_image.jpg")
+                        prompt = "retail illustration, business, comparison, sarcastic, modern"
+                        continue
+                except:
+                    pass
+                return "temp_image.jpg"
+            else:
+                print(f"[WARN] Pollinations вернул {resp.status_code}, попытка {attempt+1}")
+        except Exception as e:
+            print(f"[WARN] Ошибка Pollinations (попытка {attempt+1}): {e}")
+        time.sleep(3)
+    try:
+        print("[DEBUG] Последняя попытка с минимальным промптом")
+        url = f"https://image.pollinations.ai/prompt/business%20illustration?width=1200&height=800&seed={random.randint(1,999999)}&t={int(time.time())}"
+        resp = requests.get(url, timeout=90)
+        if resp.status_code == 200 and len(resp.content) > 1000:
+            with open("temp_image.jpg", "wb") as f:
+                f.write(resp.content)
+            return "temp_image.jpg"
+    except:
+        pass
+    print("[ERROR] Все попытки генерации картинки провалились")
+    return None
+
 # ======================== ПУБЛИКАЦИЯ =========================
+def send_message(chat_id, text):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+        requests.post(url, json=data, timeout=10)
+    except Exception as e:
+        print(f"[ERROR] send_message: {e}")
+
 def save_post(session_id, text, image_path, image_prompt, topic):
     if DATABASE_URL:
         query = '''
@@ -710,7 +703,7 @@ def update_post_status(session_id, status, scheduled_time=None):
 def send_for_approval_no_image(post_text, topic):
     session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
     save_post(session_id, post_text, "", "", topic)
-    parts = split_into_parts(post_text, max_len=500)
+    parts = split_into_parts(post_text, max_len=3000)
     total = len(parts)
     for i, part in enumerate(parts, 1):
         if total == 1:
@@ -753,7 +746,7 @@ def publish_to_telegram(text, image_path, session_id=None):
             message_id = msg_data.get('result', {}).get('message_id')
             if message_id:
                 execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (message_id, session_id))
-    parts = split_into_parts(text, max_len=500)
+    parts = split_into_parts(text, max_len=3000)
     for i, part in enumerate(parts, 1):
         if len(parts) == 1:
             text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": part, "parse_mode": "HTML"}
@@ -774,7 +767,7 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
         if resp.status_code != 200:
             print(f"[ERROR] Ошибка отправки фото на модерацию: {resp.text}")
             return False
-    parts = split_into_parts(post_text, max_len=500)
+    parts = split_into_parts(post_text, max_len=3000)
     total = len(parts)
     for i, part in enumerate(parts, 1):
         if total == 1:
@@ -1026,7 +1019,7 @@ def job(auto_publish=False):
         raise
 
 def publish_text_only(text):
-    parts = split_into_parts(text, max_len=500)
+    parts = split_into_parts(text, max_len=3000)
     for part in parts:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         data = {"chat_id": TELEGRAM_CHAT_ID, "text": part, "parse_mode": "HTML"}
@@ -1137,14 +1130,14 @@ def keep_alive():
 threading.Thread(target=keep_alive, daemon=True).start()
 threading.Thread(target=poll_updates, daemon=True).start()
 
-# ======================== РАСПИСАНИЕ =========================
-schedule.every().day.at("15:00").do(lambda: job(auto_publish=False))  # 18:00 МСК – модерация
-schedule.every().day.at("07:00").do(publish_scheduled_posts)          # 10:00 МСК – публикация
+# ======================== РАСПИСАНИЕ И ЗАПУСК =========================
+schedule.every().day.at("15:00").do(lambda: job(auto_publish=False))  # 18:00 МСК
+schedule.every().day.at("07:00").do(publish_scheduled_posts)          # 10:00 МСК
 schedule.every().sunday.at("17:00").do(weekly_report)
-schedule.every().day.at("03:00").do(backup_db)                       # 4.2 Бэкап
-schedule.every().sunday.at("20:00").do(collect_questions)            # 2.2 Сбор вопросов
-schedule.every().wednesday.at("10:00").do(publish_answers)           # 2.2 Ответы
-schedule.every().hour.do(update_stats)                               # 6.1 Обновление статистики
+schedule.every().day.at("03:00").do(backup_db)
+schedule.every().sunday.at("20:00").do(collect_questions)
+schedule.every().wednesday.at("10:00").do(publish_answers)
+schedule.every().hour.do(update_stats)
 
 print("Бот запущен. Ожидание расписания...")
 print(f"Провайдер: {API_PROVIDER}, Модель: {MODEL_NAME}")
