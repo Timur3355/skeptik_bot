@@ -26,7 +26,6 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
-# ALPHA_VANTAGE_KEY = os.getenv("ALPHA_VANTAGE_KEY")  # опционально
 
 API_PROVIDER = os.getenv("API_PROVIDER", "openai").lower()
 MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-v3")
@@ -43,15 +42,14 @@ DAY_TOPICS = {
     6: "сравнительный анализ трёх ритейлеров: кто хуже?"
 }
 
-# Форматы постов по дням недели (0-пн, 6-вс)
 POST_FORMATS = {
-    0: "мем",      # понедельник – юмор
-    1: "новость",  # вторник – факты
-    2: "аналитика",# среда – разбор
-    3: "мем",      # четверг – юмор
-    4: "новость",  # пятница – факты
-    5: "аналитика",# суббота – разбор
-    6: "мем"       # воскресенье – юмор
+    0: "мем",
+    1: "новость",
+    2: "аналитика",
+    3: "мем",
+    4: "новость",
+    5: "аналитика",
+    6: "мем"
 }
 
 PROVIDER_CONFIG = {
@@ -69,14 +67,13 @@ PROVIDER_CONFIG = {
             "HTTP-Referer": "https://skeptik-bot.onrender.com"
         }
     },
-    "deepseek": {  # fallback для прямого доступа, если есть ключ
+    "deepseek": {
         "url": "https://api.deepseek.com/chat/completions",
         "default_model": "deepseek-chat",
         "headers": lambda key: {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
     }
 }
 
-# По умолчанию используем openai
 config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["openai"])
 API_URL = config["url"]
 API_HEADERS_FUNC = config["headers"]
@@ -84,10 +81,9 @@ API_DEFAULT_MODEL = config["default_model"]
 if not MODEL_NAME:
     MODEL_NAME = API_DEFAULT_MODEL
 
-# Список провайдеров для fallback
 FALLBACK_PROVIDERS = ["openai", "openrouter", "deepseek"]
 
-# ======================== ИНИЦИАЛИЗАЦИЯ БД =========================
+# ======================== БАЗА ДАННЫХ =========================
 if DATABASE_URL:
     import psycopg2
     from psycopg2.extras import RealDictCursor
@@ -102,6 +98,7 @@ def init_db():
     if db_type == 'postgres':
         conn = get_db_connection()
         cur = conn.cursor()
+        # Основная таблица
         cur.execute('''
             CREATE TABLE IF NOT EXISTS posts (
                 id SERIAL PRIMARY KEY,
@@ -120,20 +117,25 @@ def init_db():
                 reposted BOOLEAN DEFAULT FALSE,
                 message_id BIGINT,
                 views INTEGER DEFAULT 0,
-                reactions INTEGER DEFAULT 0,
-                format TEXT DEFAULT 'новость'
+                reactions INTEGER DEFAULT 0
             )
         ''')
+        # Добавляем колонку format, если её нет
+        cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='posts' AND column_name='format'")
+        if not cur.fetchone():
+            cur.execute("ALTER TABLE posts ADD COLUMN format TEXT DEFAULT 'новость'")
         cur.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON posts(session_id)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_status ON posts(status)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_scheduled_publish ON posts(scheduled_publish_time)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_topic ON posts(topic)')
+        # Таблица prompts
         cur.execute('''
             CREATE TABLE IF NOT EXISTS prompts (
                 name TEXT PRIMARY KEY,
                 content TEXT
             )
         ''')
+        # Таблица publish_times
         cur.execute('''
             CREATE TABLE IF NOT EXISTS publish_times (
                 id SERIAL PRIMARY KEY,
@@ -144,11 +146,12 @@ def init_db():
                 reactions INTEGER
             )
         ''')
+        # Вставляем дефолтный промпт
         default_prompt = (
             "Ты — автор канала «Скептик с EBITDA».\n"
             "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
             "НЕ выводи <think>, рассуждения — только готовый пост.\n"
-            "Используй только актуальчные данные (2024–2026 год).\n"
+            "Используй только актуальные данные (2024–2026 год).\n"
             "Пост должен быть КОРОТКИМ: максимум 400 символов (3–4 абзаца).\n"
             "Структура поста (ОБЯЗАТЕЛЬНО):\n"
             "1. Заголовок с эмодзи (например, 🚨).\n"
@@ -184,10 +187,15 @@ def init_db():
                     reposted INTEGER DEFAULT 0,
                     message_id INTEGER,
                     views INTEGER DEFAULT 0,
-                    reactions INTEGER DEFAULT 0,
-                    format TEXT DEFAULT 'новость'
+                    reactions INTEGER DEFAULT 0
                 )
             ''')
+            # Добавляем колонку format, если её нет
+            cur = conn.cursor()
+            cur.execute("PRAGMA table_info(posts)")
+            columns = [col[1] for col in cur.fetchall()]
+            if 'format' not in columns:
+                conn.execute("ALTER TABLE posts ADD COLUMN format TEXT DEFAULT 'новость'")
             conn.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON posts(session_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_status ON posts(status)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_scheduled_publish ON posts(scheduled_publish_time)')
@@ -487,7 +495,6 @@ def split_into_parts(text, max_len=1000):
 
 # ======================== FALLBACK API =========================
 def call_api_with_fallback(system_prompt, user_prompt, max_tokens=400, temperature=0.85):
-    """Пытается вызвать API с переключением на резервные провайдеры при ошибке"""
     providers_to_try = FALLBACK_PROVIDERS
     last_error = None
     for provider_name in providers_to_try:
@@ -495,7 +502,6 @@ def call_api_with_fallback(system_prompt, user_prompt, max_tokens=400, temperatu
             prov_config = PROVIDER_CONFIG.get(provider_name)
             if not prov_config:
                 continue
-            # Для openrouter нужен ключ, для openai тоже, для deepseek тоже
             if not DEEPSEEK_API_KEY:
                 continue
             url = prov_config["url"]
@@ -510,7 +516,6 @@ def call_api_with_fallback(system_prompt, user_prompt, max_tokens=400, temperatu
                 "temperature": temperature,
                 "max_tokens": max_tokens
             }
-            # Для openrouter добавим referer
             if provider_name == "openrouter":
                 headers["HTTP-Referer"] = "https://skeptik-bot.onrender.com"
             print(f"[DEBUG] Попытка запроса к {provider_name}...")
@@ -541,7 +546,6 @@ def generate_post():
     if not system_prompt:
         system_prompt = "Ты — автор канала «Скептик с EBITDA».\nСтиль: дерзкий, саркастичный, с реальными цифрами.\nНЕ выводи <think>, рассуждения — только готовый пост.\nИспользуй только актуальные данные (2024–2026 год).\nПост должен быть КОРОТКИМ: максимум 400 символов (3–4 абзаца).\nСтруктура поста (ОБЯЗАТЕЛЬНО):\n1. Заголовок с эмодзи (например, 🚨).\n2. Каждый новый смысловой блок начинай с эмодзи (📉, 🏬, 💰, ⚠️).\n3. Ставь двойной перенос между абзацами.\n4. Ключевые цифры выделяй жирным через <b>...</b>.\n5. В конце — Action Item с ✅ (отдельно).\n6. После Action Item — источник и хештеги (#тег1 #тег2).\n7. Не используй разделители вроде '---'.\nПосле текста === и описание картинки (англ., 3–4 слова)."
 
-    # Дополнительные указания в зависимости от формата
     format_style = {
         "мем": "Сделай пост с юмором, сарказмом, коротко (до 300 символов).",
         "новость": "Информативный пост с фактами и датами.",
@@ -554,7 +558,6 @@ def generate_post():
         full_text = call_api_with_fallback(system_prompt, user_prompt, max_tokens=400, temperature=0.85)
     except Exception as e:
         print(f"[ERROR] Ошибка генерации: {e}")
-        # Если API не работает, используем запасной текст
         full_text = "📊 Скептик с EBITDA: аналитика ритейла.\n\n⚠️ К сожалению, API временно недоступен. Попробуйте позже.\n\n✅ Следите за обновлениями!"
 
     full_text = clean_text(full_text)
@@ -992,7 +995,7 @@ def poll_updates():
             print(f"[ERROR] poll_updates: {e}")
             time.sleep(5)
 
-# ======================== ОСТАЛЬНЫЙ КОД (job, check_and_repost и т.д.) =========================
+# ======================== ОСТАЛЬНЫЙ КОД =========================
 def check_and_repost():
     cutoff = (datetime.now() - timedelta(days=30)).isoformat()
     rows = execute_query(
@@ -1033,7 +1036,6 @@ def record_publish_time(post_id, views, reactions):
         )
 
 def analyze_best_time():
-    # Простой анализ: считаем средние просмотры по часам и дням недели
     rows = execute_query(
         'SELECT publish_hour, AVG(views) as avg_views FROM publish_times GROUP BY publish_hour ORDER BY avg_views DESC LIMIT 1',
         fetchone=True
@@ -1073,7 +1075,6 @@ def digest_job():
                 print(f"[WARN] Не удалось получить статистику для {row['message_id']}: {e}")
         digest += f"{i}. {short_text}\n   👁 {views} просмотров, ❤️ {reactions} реакций\n\n"
 
-    # Добавляем рекомендацию по времени
     best_hour = analyze_best_time()
     if best_hour is not None:
         digest += f"\n💡 **Совет:** лучшее время для публикации – {best_hour}:00 МСК (на основе статистики)."
@@ -1088,7 +1089,6 @@ def weekly_report():
         msg = f"📊 Еженедельный отчёт:\nОдобрено: {stats['published']}\nОтклонено: {stats['rejected']}\nВсего создано: {stats['total']}"
     else:
         msg = "📊 Недостаточно данных."
-    # Добавляем рекомендацию по времени
     best_hour = analyze_best_time()
     if best_hour is not None:
         msg += f"\n💡 Лучшее время для публикации: {best_hour}:00 МСК."
