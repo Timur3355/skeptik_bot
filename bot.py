@@ -323,7 +323,7 @@ def init_db():
             "Ты — автор канала «Скептик с EBITDA».\n"
             "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
             "Пост должен быть КОРОТКИМ: максимум 500 символов (3–4 абзаца).\n"
-            "Используй ТОЛЬКО свежие новости (за последние 2–3 месяца).\n"
+            "Используй ТОЛЬКО свежие новости (за последние 2–3 месяца). Если данных нет – укажи это.\n"
             "Структура:\n"
             "1. Заголовок с эмодзи.\n"
             "2. Каждый абзац начинай с нового эмодзи.\n"
@@ -384,7 +384,7 @@ def init_db():
             "Ты — автор канала «Скептик с EBITDA».\n"
             "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
             "Пост должен быть КОРОТКИМ: максимум 500 символов (3–4 абзаца).\n"
-            "Используй ТОЛЬКО свежие новости (за последние 2–3 месяца).\n"
+            "Используй ТОЛЬКО свежие новости (за последние 2–3 месяца). Если данных нет – укажи это.\n"
             "Структура:\n"
             "1. Заголовок с эмодзи.\n"
             "2. Каждый абзац начинай с нового эмодзи.\n"
@@ -434,7 +434,7 @@ def generate_post():
             {"role": "user", "content": f"Напиши пост на тему: {topic}. {financial_text} Стиль: {style}"}
         ],
         "temperature": 0.85,
-        "max_tokens": 350
+        "max_tokens": 600
     }
 
     for attempt in range(3):
@@ -560,7 +560,7 @@ def beautify_post(text):
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text
 
-def split_into_parts(text, max_len=1000):
+def split_into_parts(text, max_len=3000):
     if len(text) <= max_len:
         return [text]
     paragraphs = text.split('\n\n')
@@ -703,7 +703,7 @@ def update_post_status(session_id, status, scheduled_time=None):
 def send_for_approval_no_image(post_text, topic):
     session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
     save_post(session_id, post_text, "", "", topic)
-    parts = split_into_parts(post_text, max_len=1000)  # для модерации разбиваем с маркерами
+    parts = split_into_parts(post_text, max_len=3000)
     total = len(parts)
     for i, part in enumerate(parts, 1):
         if total == 1:
@@ -746,15 +746,15 @@ def publish_to_telegram(text, image_path, session_id=None):
             message_id = msg_data.get('result', {}).get('message_id')
             if message_id:
                 execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (message_id, session_id))
-
-    # Публикуем текст без маркеров "часть"
-    parts = split_into_parts(text, max_len=4000)  # разбиваем только если длиннее 4000
-    for part in parts:
-        # Отправляем каждую часть как отдельное сообщение, но без "часть 1/2"
-        text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": part, "parse_mode": "HTML"}
+    parts = split_into_parts(text, max_len=3000)
+    for i, part in enumerate(parts, 1):
+        if len(parts) == 1:
+            text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": part, "parse_mode": "HTML"}
+        else:
+            text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": f"📝 Пост (часть {i}/{len(parts)}):\n\n{part}", "parse_mode": "HTML"}
         resp = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=text_data, timeout=30)
         if resp.status_code != 200:
-            print(f"[ERROR] Ошибка отправки текста: {resp.text}")
+            print(f"[ERROR] Ошибка отправки текста (часть {i}): {resp.text}")
             return False
     return True
 
@@ -767,7 +767,7 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic):
         if resp.status_code != 200:
             print(f"[ERROR] Ошибка отправки фото на модерацию: {resp.text}")
             return False
-    parts = split_into_parts(post_text, max_len=1000)  # для модерации с маркерами
+    parts = split_into_parts(post_text, max_len=3000)
     total = len(parts)
     for i, part in enumerate(parts, 1):
         if total == 1:
@@ -1019,7 +1019,7 @@ def job(auto_publish=False):
         raise
 
 def publish_text_only(text):
-    parts = split_into_parts(text, max_len=1000)
+    parts = split_into_parts(text, max_len=3000)
     for part in parts:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         data = {"chat_id": TELEGRAM_CHAT_ID, "text": part, "parse_mode": "HTML"}
