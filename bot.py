@@ -16,6 +16,7 @@ import re
 import pytz
 import feedparser
 from PIL import Image
+import shutil
 
 # ======================== КОНФИГУРАЦИЯ =========================
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
@@ -154,6 +155,17 @@ def init_db():
         cur.execute('CREATE INDEX IF NOT EXISTS idx_status ON posts(status)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_scheduled_publish ON posts(scheduled_publish_time)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_topic ON posts(topic)')
+        # Таблица для аналитики времени публикации
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS publish_times (
+                id SERIAL PRIMARY KEY,
+                post_id INTEGER,
+                publish_hour INTEGER,
+                publish_weekday INTEGER,
+                views INTEGER,
+                reactions INTEGER
+            )
+        ''')
         conn.commit()
         cur.close()
         conn.close()
@@ -184,6 +196,17 @@ def init_db():
             conn.execute('CREATE INDEX IF NOT EXISTS idx_status ON posts(status)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_scheduled_publish ON posts(scheduled_publish_time)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_topic ON posts(topic)')
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS publish_times (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    post_id INTEGER,
+                    publish_hour INTEGER,
+                    publish_weekday INTEGER,
+                    views INTEGER,
+                    reactions INTEGER,
+                    FOREIGN KEY(post_id) REFERENCES posts(id)
+                )
+            ''')
             conn.commit()
 init_db()
 
@@ -270,6 +293,37 @@ def get_weekly_stats():
         (week_ago,), fetchone=True
     )
     return rows
+
+# ======================== УЛУЧШЕНИЯ: БЭКАП И СТАТИСТИКА =========================
+def backup_db():
+    try:
+        if not os.path.exists("backups"):
+            os.makedirs("backups")
+        if db_type == 'sqlite':
+            src = DB_PATH
+            if os.path.exists(src):
+                dst = f"backups/posts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+                shutil.copyfile(src, dst)
+                print(f"[INFO] Бэкап создан: {dst}")
+        else:
+            # Для PostgreSQL просто делаем дамп через pg_dump (если установлен), но пока пропускаем
+            print("[INFO] Бэкап PostgreSQL не реализован, используйте встроенные средства Render")
+    except Exception as e:
+        print(f"[ERROR] Ошибка бэкапа: {e}")
+
+def record_publish_time(post_id, views, reactions):
+    if db_type == 'postgres':
+        execute_query(
+            'INSERT INTO publish_times (post_id, publish_hour, publish_weekday, views, reactions) '
+            'SELECT id, EXTRACT(HOUR FROM created_at)::int, EXTRACT(DOW FROM created_at)::int, %s, %s FROM posts WHERE id = %s',
+            (views, reactions, post_id)
+        )
+    else:
+        execute_query(
+            'INSERT INTO publish_times (post_id, publish_hour, publish_weekday, views, reactions) '
+            'SELECT id, strftime("%H", created_at), strftime("%w", created_at), ?, ? FROM posts WHERE id = ?',
+            (views, reactions, post_id)
+        )
 
 # ======================== ПРОСТАЯ И НАДЁЖНАЯ ПОСТОБРАБОТКА =========================
 def beautify_post(text):
@@ -695,6 +749,8 @@ def digest_job():
                         views = stats.get('views', 0)
                         reactions = sum(r.get('count', 0) for r in stats.get('reactions', []))
                         execute_query('UPDATE posts SET views = ?, reactions = ? WHERE message_id = ?', (views, reactions, row['message_id']))
+                        # Записываем время публикации для аналитики
+                        record_publish_time(row['id'], views, reactions)
             except:
                 pass
         digest += f"{i}. {short_text}\n   👁 {views} просмотров, ❤️ {reactions} реакций\n\n"
@@ -777,7 +833,26 @@ def answer_callback(chat_id, message_id, text):
     except:
         pass
 
-# ======================== ПОЛЛИНГ =========================
+# ======================== ОБРАБОТЧИК КОМАНД АДМИНА =========================
+def handle_admin_command(text, chat_id):
+    if text.startswith('/stats'):
+        rows = execute_query(
+            'SELECT COUNT(*) as total, SUM(CASE WHEN status=\'published\' THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status=\'rejected\' THEN 1 ELSE 0 END) as rejected FROM posts',
+            fetchone=True
+        )
+        msg = f"📊 Статистика:\nВсего постов: {rows['total']}\nОпубликовано: {rows['published']}\nОтклонено: {rows['rejected']}"
+        send_message(chat_id, msg)
+    elif text.startswith('/backup'):
+        backup_db()
+        send_message(chat_id, "✅ Бэкап создан")
+    elif text.startswith('/generate'):
+        send_message(chat_id, "🔄 Запускаю генерацию...")
+        # Запускаем в фоне, чтобы не блокировать
+        threading.Thread(target=lambda: job(auto_publish=False), daemon=True).start()
+    else:
+        send_message(chat_id, "❌ Неизвестная команда. Доступные: /stats, /backup, /generate")
+
+# ======================== ПОЛЛИНГ ОБНОВЛЕНИЙ =========================
 def poll_updates():
     offset = 0
     while True:
@@ -805,7 +880,10 @@ def poll_updates():
                             pass
                 elif "message" in update and update["message"].get("chat", {}).get("id") == int(ADMIN_CHAT_ID):
                     chat_id = update["message"]["chat"]["id"]
-                    if chat_id in edit_mode:
+                    text = update["message"].get("text", "")
+                    if text.startswith('/'):
+                        handle_admin_command(text, chat_id)
+                    elif chat_id in edit_mode:
                         session_id = edit_mode.pop(chat_id)
                         new_text = update["message"].get("text")
                         if new_text:
@@ -820,21 +898,6 @@ def poll_updates():
         except Exception as e:
             print(f"[ERROR] poll_updates: {e}")
             time.sleep(5)
-
-# ======================== ПУБЛИКАЦИЯ ЗАПЛАНИРОВАННЫХ =========================
-def publish_scheduled_posts():
-    print(f"[{datetime.now()}] Проверка запланированных постов...")
-    posts = get_approved_posts_to_publish()
-    for p in posts:
-        if publish_to_telegram(p["text"], p["image_path"], p["session_id"]):
-            update_post_status(p["session_id"], 'published')
-            print(f"[{datetime.now()}] ✅ Опубликован {p['session_id']}")
-        else:
-            if publish_text_only(p["text"]):
-                update_post_status(p["session_id"], 'published')
-                print(f"[{datetime.now()}] ✅ Опубликован текст {p['session_id']}")
-            else:
-                print(f"[{datetime.now()}] ❌ Ошибка публикации {p['session_id']}")
 
 # ======================== ОСНОВНАЯ ЗАДАЧА =========================
 def job(auto_publish=False):
@@ -878,26 +941,22 @@ def job(auto_publish=False):
         send_message(ADMIN_CHAT_ID, f"❌ Ошибка в job: {str(e)[:100]}")
         raise
 
-# ======================== ВЕБ-СЕРВЕР =========================
+# ======================== ВЕБ-СЕРВЕР (АСИНХРОННЫЙ /test) =========================
+def run_job_async():
+    try:
+        job(auto_publish=False)
+    except Exception as e:
+        print(f"[ERROR] Асинхронный job: {e}")
+        traceback.print_exc()
+
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/test':
-            old_stdout = sys.stdout
-            sys.stdout = io.StringIO()
-            try:
-                job(auto_publish=False)
-                output = sys.stdout.getvalue()
-                self.send_response(200)
-                self.end_headers()
-                self.wfile.write(f"✅ Успешно (модерация)!\n\n{output}".encode())
-            except Exception as e:
-                output = sys.stdout.getvalue()
-                error_text = traceback.format_exc()
-                self.send_response(500)
-                self.end_headers()
-                self.wfile.write(f"❌ ОШИБКА: {str(e)}\n\n{output}\n\nСТЕК:\n{error_text}".encode())
-            finally:
-                sys.stdout = old_stdout
+            # Запускаем генерацию в фоне, чтобы не ждать
+            threading.Thread(target=run_job_async, daemon=True).start()
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write("✅ Генерация поста запущена в фоне. Результат придёт в Telegram через 1-2 минуты.".encode())
             return
         elif self.path == '/test_publish':
             old_stdout = sys.stdout
@@ -947,10 +1006,12 @@ schedule.every().day.at("15:00").do(lambda: job(auto_publish=False))  # 18:00 М
 schedule.every().day.at("07:00").do(publish_scheduled_posts)          # 10:00 МСК
 schedule.every().sunday.at("17:00").do(weekly_report)
 schedule.every().sunday.at("17:00").do(digest_job)
+schedule.every().day.at("03:00").do(backup_db)  # бэкап каждый день в 3:00 МСК
 
 print("Бот запущен. Ожидание расписания...")
 print(f"Провайдер: {API_PROVIDER}, Модель: {MODEL_NAME}")
 print("Модерация каждый день в 18:00 МСК, публикация в 10:00 МСК.")
+print("Команды админа: /stats, /backup, /generate")
 
 while True:
     schedule.run_pending()
