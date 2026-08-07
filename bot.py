@@ -26,9 +26,11 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
+API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()  # по умолчанию openrouter
 
-API_PROVIDER = os.getenv("API_PROVIDER", "openai").lower()
-MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-v3")
+# Для OpenRouter модель фиксированная, но можно переопределить
+MODEL_NAME = os.getenv("MODEL_NAME", "")
+# Если не задана, будет использована дефолтная для провайдера
 
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
@@ -60,7 +62,7 @@ PROVIDER_CONFIG = {
     },
     "openrouter": {
         "url": "https://openrouter.ai/api/v1/chat/completions",
-        "default_model": "deepseek/deepseek-chat:free",
+        "default_model": "deepseek/deepseek-chat:free",  # ключевое исправление
         "headers": lambda key: {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {key}",
@@ -74,16 +76,17 @@ PROVIDER_CONFIG = {
     }
 }
 
-config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["openai"])
+config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["openrouter"])
 API_URL = config["url"]
 API_HEADERS_FUNC = config["headers"]
 API_DEFAULT_MODEL = config["default_model"]
 if not MODEL_NAME:
     MODEL_NAME = API_DEFAULT_MODEL
 
-FALLBACK_PROVIDERS = ["openai", "openrouter", "deepseek"]
+# Список провайдеров для fallback (если нужен)
+FALLBACK_PROVIDERS = ["openrouter", "openai", "deepseek"]
 
-# ======================== БАЗА ДАННЫХ =========================
+# ======================== ИНИЦИАЛИЗАЦИЯ БД =========================
 if DATABASE_URL:
     import psycopg2
     from psycopg2.extras import RealDictCursor
@@ -98,7 +101,6 @@ def init_db():
     if db_type == 'postgres':
         conn = get_db_connection()
         cur = conn.cursor()
-        # Основная таблица
         cur.execute('''
             CREATE TABLE IF NOT EXISTS posts (
                 id SERIAL PRIMARY KEY,
@@ -120,7 +122,6 @@ def init_db():
                 reactions INTEGER DEFAULT 0
             )
         ''')
-        # Добавляем колонку format, если её нет
         cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='posts' AND column_name='format'")
         if not cur.fetchone():
             cur.execute("ALTER TABLE posts ADD COLUMN format TEXT DEFAULT 'новость'")
@@ -128,14 +129,12 @@ def init_db():
         cur.execute('CREATE INDEX IF NOT EXISTS idx_status ON posts(status)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_scheduled_publish ON posts(scheduled_publish_time)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_topic ON posts(topic)')
-        # Таблица prompts
         cur.execute('''
             CREATE TABLE IF NOT EXISTS prompts (
                 name TEXT PRIMARY KEY,
                 content TEXT
             )
         ''')
-        # Таблица publish_times
         cur.execute('''
             CREATE TABLE IF NOT EXISTS publish_times (
                 id SERIAL PRIMARY KEY,
@@ -146,7 +145,6 @@ def init_db():
                 reactions INTEGER
             )
         ''')
-        # Вставляем дефолтный промпт
         default_prompt = (
             "Ты — автор канала «Скептик с EBITDA».\n"
             "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
@@ -190,7 +188,6 @@ def init_db():
                     reactions INTEGER DEFAULT 0
                 )
             ''')
-            # Добавляем колонку format, если её нет
             cur = conn.cursor()
             cur.execute("PRAGMA table_info(posts)")
             columns = [col[1] for col in cur.fetchall()]
@@ -493,9 +490,10 @@ def split_into_parts(text, max_len=1000):
         result_parts.append(current_part)
     return result_parts if result_parts else [text[:max_len] + "..."]
 
-# ======================== FALLBACK API =========================
+# ======================== ВЫЗОВ API С FALLBACK =========================
 def call_api_with_fallback(system_prompt, user_prompt, max_tokens=400, temperature=0.85):
-    providers_to_try = FALLBACK_PROVIDERS
+    # Если задан конкретный провайдер, пробуем только его (если он в списке)
+    providers_to_try = [API_PROVIDER] if API_PROVIDER in FALLBACK_PROVIDERS else FALLBACK_PROVIDERS
     last_error = None
     for provider_name in providers_to_try:
         try:
@@ -503,10 +501,15 @@ def call_api_with_fallback(system_prompt, user_prompt, max_tokens=400, temperatu
             if not prov_config:
                 continue
             if not DEEPSEEK_API_KEY:
+                print(f"[WARN] Нет API ключа для {provider_name}")
                 continue
             url = prov_config["url"]
             headers = prov_config["headers"](DEEPSEEK_API_KEY)
-            model = prov_config.get("default_model", "deepseek-v3")
+            # Для OpenRouter используем фиксированную модель, если не задана
+            if provider_name == "openrouter":
+                model = "deepseek/deepseek-chat:free"
+            else:
+                model = MODEL_NAME if MODEL_NAME else prov_config.get("default_model", "deepseek-v3")
             payload = {
                 "model": model,
                 "messages": [
@@ -516,9 +519,10 @@ def call_api_with_fallback(system_prompt, user_prompt, max_tokens=400, temperatu
                 "temperature": temperature,
                 "max_tokens": max_tokens
             }
+            # Для openrouter не забываем про referer
             if provider_name == "openrouter":
                 headers["HTTP-Referer"] = "https://skeptik-bot.onrender.com"
-            print(f"[DEBUG] Попытка запроса к {provider_name}...")
+            print(f"[DEBUG] Попытка запроса к {provider_name} с моделью {model}")
             response = requests.post(url, headers=headers, json=payload, timeout=90)
             if response.status_code == 200:
                 data = response.json()
@@ -527,13 +531,17 @@ def call_api_with_fallback(system_prompt, user_prompt, max_tokens=400, temperatu
                     if content:
                         print(f"[DEBUG] Успешный ответ от {provider_name}")
                         return content
+                else:
+                    print(f"[WARN] {provider_name} вернул пустой ответ")
+                    last_error = "Пустой ответ"
             else:
                 print(f"[WARN] {provider_name} вернул {response.status_code}: {response.text}")
-                last_error = f"{provider_name}: {response.status_code}"
+                last_error = f"{provider_name} {response.status_code}: {response.text}"
         except Exception as e:
             print(f"[WARN] Ошибка при запросе к {provider_name}: {e}")
             last_error = str(e)
             time.sleep(2)
+    # Если ничего не сработало, поднимаем исключение
     raise Exception(f"Все API провайдеры недоступны. Последняя ошибка: {last_error}")
 
 # ======================== ГЕНЕРАЦИЯ ПОСТА И КАРТИНКИ =========================
@@ -558,6 +566,10 @@ def generate_post():
         full_text = call_api_with_fallback(system_prompt, user_prompt, max_tokens=400, temperature=0.85)
     except Exception as e:
         print(f"[ERROR] Ошибка генерации: {e}")
+        # Отправляем админу детали ошибки
+        error_msg = f"❌ Ошибка API: {str(e)[:200]}"
+        send_message(ADMIN_CHAT_ID, error_msg)
+        # fallback текст
         full_text = "📊 Скептик с EBITDA: аналитика ритейла.\n\n⚠️ К сожалению, API временно недоступен. Попробуйте позже.\n\n✅ Следите за обновлениями!"
 
     full_text = clean_text(full_text)
