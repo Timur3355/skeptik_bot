@@ -19,24 +19,18 @@ from PIL import Image
 import shutil
 import sqlite3
 from contextlib import closing
-import html
 
 # ======================== КОНФИГУРАЦИЯ =========================
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")          # Ключ OpenRouter
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-API_PROVIDER = "openrouter"   # Используем только OpenRouter
-MODEL_NAME = "meta-llama/llama-3.3-70b-instruct:free"  # Дефолтная, но задействован fallback
+API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
+MODEL_NAME = os.getenv("MODEL_NAME", "google/gemini-2.0-flash-exp:free")
 
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
-
-# Константы
-MAX_POST_LENGTH = 400
-SPLIT_MESSAGE_LEN = 1000
-IMAGE_TIMEOUT = 90
 
 DAY_TOPICS = {
     0: "логистические провалы Ozon: затраты, сроки доставки, убытки",
@@ -58,23 +52,31 @@ POST_FORMATS = {
     6: "мем"
 }
 
-# Настройка OpenRouter (единственный провайдер)
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_HEADERS = lambda key: {
-    "Content-Type": "application/json",
-    "Authorization": f"Bearer {key}",
-    "HTTP-Referer": "https://skeptik-bot.onrender.com"
+PROVIDER_CONFIG = {
+    "openai": {
+        "url": "https://api.chatanywhere.tech/v1/chat/completions",
+        "default_model": "deepseek-v3",
+        "headers": lambda key: {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
+    },
+    "openrouter": {
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "default_model": "google/gemini-2.0-flash-exp:free",
+        "headers": lambda key: {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}",
+            "HTTP-Referer": "https://skeptik-bot.onrender.com"
+        }
+    }
 }
 
-# Список моделей для fallback (актуальные бесплатные на август 2026)
-# Перед деплоем рекомендуется сверить список с https://openrouter.ai/api/v1/models
-FALLBACK_MODELS = [
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "qwen/qwen3-coder:free",
-    "nvidia/nemotron-nano-9b-v2:free",
-    "openai/gpt-oss:free",
-    "poolside/laguna-s-2.1:free"
-]
+FALLBACK_PROVIDERS = ["openai", "openrouter"]
+
+config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["openrouter"])
+API_URL = config["url"]
+API_HEADERS_FUNC = config["headers"]
+API_DEFAULT_MODEL = config["default_model"]
+if not MODEL_NAME:
+    MODEL_NAME = API_DEFAULT_MODEL
 
 # ======================== БАЗА ДАННЫХ =========================
 if DATABASE_URL:
@@ -143,7 +145,7 @@ def init_db():
             "1. Заголовок с эмодзи (например, 🚨).\n"
             "2. Каждый новый смысловой блок начинай с эмодзи (📉, 🏬, 💰, ⚠️).\n"
             "3. Ставь двойной перенос между абзацами.\n"
-            "4. Ключевые цифры выделяй жирным через <b>...</b>.\n"
+            "4. Ключевые цифры выделяй жирным через <b>...</b>.\n"  # Только HTML
             "5. В конце — Action Item с ✅ (отдельно).\n"
             "6. После Action Item — источник и хештеги (#тег1 #тег2).\n"
             "7. Не используй разделители вроде '---'.\n"
@@ -275,13 +277,13 @@ def get_topic_from_news():
                 if any(kw in title for kw in keywords):
                     summary = entry.summary if hasattr(entry, 'summary') else ""
                     return f"{entry.title}. {summary[:100]}"
-        return DAY_TOPICS.get(datetime.utcnow().weekday(), DAY_TOPICS[0])
+        return DAY_TOPICS.get(datetime.now().weekday(), DAY_TOPICS[0])
     except Exception as e:
         print(f"[WARN] Ошибка RSS: {e}")
-        return DAY_TOPICS.get(datetime.utcnow().weekday(), DAY_TOPICS[0])
+        return DAY_TOPICS.get(datetime.now().weekday(), DAY_TOPICS[0])
 
 def get_topic_by_analytics():
-    week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
+    week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
         'SELECT topic, rating, views, reactions FROM posts WHERE status = \'published\' AND published_at >= ? AND topic IS NOT NULL AND topic != \'\'',
         (week_ago,), fetch=True
@@ -316,7 +318,7 @@ def backup_db():
         if db_type == 'sqlite':
             src = DB_PATH
             if os.path.exists(src):
-                dst = f"backups/posts_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.db"
+                dst = f"backups/posts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
                 shutil.copyfile(src, dst)
                 print(f"[INFO] Бэкап создан: {dst}")
         else:
@@ -339,10 +341,10 @@ def save_post(session_id, text, image_path, image_prompt, topic, format_type):
                 created_at = EXCLUDED.created_at,
                 format = EXCLUDED.format
         '''
-        params = (session_id, text, image_path, image_prompt, topic, 'pending', datetime.utcnow().isoformat(), format_type)
+        params = (session_id, text, image_path, image_prompt, topic, 'pending', datetime.now().isoformat(), format_type)
     else:
         query = 'INSERT OR REPLACE INTO posts (session_id, text, image_path, image_prompt, topic, status, created_at, format) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-        params = (session_id, text, image_path, image_prompt, topic, 'pending', datetime.utcnow().isoformat(), format_type)
+        params = (session_id, text, image_path, image_prompt, topic, 'pending', datetime.now().isoformat(), format_type)
     execute_query(query, params)
     print(f"[DEBUG] Пост сохранён: {session_id} (формат: {format_type})")
 
@@ -356,7 +358,7 @@ def update_post_text(session_id, new_text):
 def update_post_status(session_id, status, scheduled_time=None):
     if scheduled_time:
         execute_query('UPDATE posts SET status = ?, scheduled_publish_time = ?, approved_at = ? WHERE session_id = ?',
-                      (status, scheduled_time.isoformat(), datetime.utcnow().isoformat(), session_id))
+                      (status, scheduled_time.isoformat(), datetime.now().isoformat(), session_id))
     else:
         execute_query('UPDATE posts SET status = ? WHERE session_id = ?', (status, session_id))
 
@@ -364,15 +366,15 @@ def delete_post(session_id):
     execute_query('DELETE FROM posts WHERE session_id = ?', (session_id,))
 
 def get_approved_posts_to_publish():
-    now = datetime.utcnow()
+    now = datetime.now().isoformat()
     rows = execute_query(
-        'SELECT session_id, text, image_path, scheduled_publish_time FROM posts WHERE status = \'approved\' AND scheduled_publish_time <= ?',
-        (now.isoformat(),), fetch=True
+        'SELECT session_id, text, image_path FROM posts WHERE status = \'approved\' AND scheduled_publish_time <= ?',
+        (now,), fetch=True
     )
     return rows
 
 def get_weekly_stats():
-    week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
+    week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
         'SELECT COUNT(*) as total, SUM(CASE WHEN status=\'published\' THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status=\'rejected\' THEN 1 ELSE 0 END) as rejected FROM posts WHERE created_at >= ?',
         (week_ago,), fetchone=True
@@ -386,14 +388,7 @@ def get_last_posts(limit=5):
     )
     return rows
 
-# ======================== ОБРАБОТКА ТЕКСТА =========================
-def sanitize_html(text):
-    allowed_tags = ['<b>', '</b>', '<i>', '</i>', '<u>', '</u>', '<s>', '</s>']
-    text = html.escape(text)
-    for tag in allowed_tags:
-        text = text.replace(html.escape(tag), tag)
-    return text
-
+# ======================== ОБРАБОТКА ТЕКСТА (ВОССТАНОВЛЕНА) =========================
 def clean_text(text):
     text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
     text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
@@ -401,10 +396,14 @@ def clean_text(text):
     return text.strip()
 
 def beautify_post(text):
+    """
+    Разбивает текст на абзацы (2–3 предложения), выделяет числа жирным через HTML <b>.
+    """
     if not text:
         return ""
     text = re.sub(r'\s+', ' ', text).strip()
 
+    # Извлекаем Action Item
     action_text = ""
     match = re.search(r'(✅.*?)(?=\s*[A-Z#]|$)', text, re.DOTALL)
     if not match:
@@ -415,18 +414,20 @@ def beautify_post(text):
         if not action_text.startswith('✅'):
             action_text = '✅ ' + action_text
 
+    # Разбиваем на предложения и группируем по 2-3 в абзац
     sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
     paragraphs = []
     i = 0
     while i < len(sentences):
-        if i+1 < len(sentences):
-            paragraphs.append(sentences[i] + ' ' + sentences[i+1])
+        if i + 1 < len(sentences):
+            paragraphs.append(sentences[i] + ' ' + sentences[i + 1])
             i += 2
         else:
             paragraphs.append(sentences[i])
             i += 1
     text = '\n\n'.join(paragraphs)
 
+    # Выделяем числа жирным (HTML)
     def replacer(m):
         num = m.group(0)
         if not re.search(r'<b>.*?' + re.escape(num) + r'.*?</b>', text):
@@ -434,6 +435,7 @@ def beautify_post(text):
         return num
     text = re.sub(r'\b(\d+[.,]?\d*)\b', replacer, text)
 
+    # Добавляем Action Item в конец
     if action_text:
         hashtag_match = re.search(r'(#\w+(?:\s*#\w+)*)$', text)
         if hashtag_match:
@@ -443,10 +445,14 @@ def beautify_post(text):
         else:
             text = text + f'\n\n<b>{action_text}</b>'
 
+    # Убираем лишние пустые строки
     text = re.sub(r'\n{3,}', '\n\n', text)
-    return sanitize_html(text)
+    return text
 
-def split_into_parts(text, max_len=SPLIT_MESSAGE_LEN):
+def split_into_parts(text, max_len=1000):
+    """
+    Разбивает текст на части, сохраняя абзацы (двойные переносы).
+    """
     if len(text) <= max_len:
         return [text]
     paragraphs = text.split('\n\n')
@@ -481,12 +487,20 @@ def split_into_parts(text, max_len=SPLIT_MESSAGE_LEN):
         result_parts.append(current_part)
     return result_parts if result_parts else [text[:max_len] + "..."]
 
-# ======================== ОБРАЩЕНИЕ К API (FALLBACK ПО МОДЕЛЯМ) =========================
-def call_api_with_fallback(system_prompt, user_prompt, max_tokens=MAX_POST_LENGTH, temperature=0.85):
+# ======================== FALLBACK API =========================
+def call_api_with_fallback(system_prompt, user_prompt, max_tokens=400, temperature=0.85):
+    providers_to_try = FALLBACK_PROVIDERS
     last_error = None
-    for model in FALLBACK_MODELS:
+    for provider_name in providers_to_try:
         try:
-            headers = OPENROUTER_HEADERS(DEEPSEEK_API_KEY)
+            prov_config = PROVIDER_CONFIG.get(provider_name)
+            if not prov_config:
+                continue
+            if not DEEPSEEK_API_KEY:
+                continue
+            url = prov_config["url"]
+            headers = prov_config["headers"](DEEPSEEK_API_KEY)
+            model = prov_config.get("default_model", MODEL_NAME)
             payload = {
                 "model": model,
                 "messages": [
@@ -496,34 +510,50 @@ def call_api_with_fallback(system_prompt, user_prompt, max_tokens=MAX_POST_LENGT
                 "temperature": temperature,
                 "max_tokens": max_tokens
             }
-            print(f"[DEBUG] Попытка запроса к модели: {model}")
-            response = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=90)
+            if provider_name == "openrouter":
+                headers["HTTP-Referer"] = "https://skeptik-bot.onrender.com"
+            print(f"[DEBUG] Попытка запроса к {provider_name} с моделью {model}...")
+            response = requests.post(url, headers=headers, json=payload, timeout=90)
             if response.status_code == 200:
                 data = response.json()
                 if "choices" in data and len(data["choices"]) > 0:
                     content = data["choices"][0]["message"]["content"]
                     if content:
-                        print(f"[DEBUG] ✅ Успешный ответ от модели: {model}")
+                        print(f"[DEBUG] Успешный ответ от {provider_name}")
                         return content
             else:
-                last_error = f"{model} → {response.status_code}: {response.text[:200]}"
-                print(f"[WARN] {last_error}")
-                time.sleep(2)
+                print(f"[WARN] {provider_name} вернул {response.status_code}: {response.text}")
+                last_error = f"{provider_name} {response.status_code}: {response.text}"
         except Exception as e:
-            last_error = f"{model} → {e}"
-            print(f"[WARN] {last_error}")
-            time.sleep(3)
-    raise Exception(f"Все модели недоступны. Последняя ошибка: {last_error}")
+            print(f"[WARN] Ошибка при запросе к {provider_name}: {e}")
+            last_error = str(e)
+            time.sleep(2)
+    raise Exception(f"Все API провайдеры недоступны. Последняя ошибка: {last_error}")
 
-# ======================== ГЕНЕРАЦИЯ ПОСТА =========================
+# ======================== ГЕНЕРАЦИЯ ПОСТА И КАРТИНКИ =========================
 def generate_post():
     topic = get_topic_by_analytics()
-    format_type = POST_FORMATS.get(datetime.utcnow().weekday(), "новость")
+    format_type = POST_FORMATS.get(datetime.now().weekday(), "новость")
     print(f"[DEBUG] Выбрана тема: {topic}, формат: {format_type}")
 
     system_prompt = get_prompt()
     if not system_prompt:
-        system_prompt = "Ты — автор канала «Скептик с EBITDA».\nСтиль: дерзкий, саркастичный, с реальными цифрами.\nНЕ выводи <think>, рассуждения — только готовый пост.\nИспользуй только актуальные данные (2024–2026 год).\nПост должен быть КОРОТКИМ: максимум 400 символов (3–4 абзаца).\nСтруктура поста (ОБЯЗАТЕЛЬНО):\n1. Заголовок с эмодзи (например, 🚨).\n2. Каждый новый смысловой блок начинай с эмодзи (📉, 🏬, 💰, ⚠️).\n3. Ставь двойной перенос между абзацами.\n4. Ключевые цифры выделяй жирным через <b>...</b>.\n5. В конце — Action Item с ✅ (отдельно).\n6. После Action Item — источник и хештеги (#тег1 #тег2).\n7. Не используй разделители вроде '---'.\nПосле текста === и описание картинки (англ., 3–4 слова)."
+        system_prompt = (
+            "Ты — автор канала «Скептик с EBITDA».\n"
+            "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
+            "НЕ выводи <think>, рассуждения — только готовый пост.\n"
+            "Используй только актуальные данные (2024–2026 год).\n"
+            "Пост должен быть КОРОТКИМ: максимум 400 символов (3–4 абзаца).\n"
+            "Структура поста (ОБЯЗАТЕЛЬНО):\n"
+            "1. Заголовок с эмодзи (например, 🚨).\n"
+            "2. Каждый новый смысловой блок начинай с эмодзи (📉, 🏬, 💰, ⚠️).\n"
+            "3. Ставь двойной перенос между абзацами.\n"
+            "4. Ключевые цифры выделяй жирным через <b>...</b>.\n"
+            "5. В конце — Action Item с ✅ (отдельно).\n"
+            "6. После Action Item — источник и хештеги (#тег1 #тег2).\n"
+            "7. Не используй разделители вроде '---'.\n"
+            "После текста === и описание картинки (англ., 3–4 слова)."
+        )
 
     format_style = {
         "мем": "Сделай пост с юмором, сарказмом, коротко (до 300 символов).",
@@ -534,12 +564,9 @@ def generate_post():
     user_prompt = f"Напиши пост на тему: {topic}. {format_style} Используй реальные цифры из отчётов."
 
     try:
-        full_text = call_api_with_fallback(system_prompt, user_prompt, max_tokens=MAX_POST_LENGTH, temperature=0.85)
+        full_text = call_api_with_fallback(system_prompt, user_prompt, max_tokens=400, temperature=0.85)
     except Exception as e:
-        error_msg = str(e)
-        print(f"[ERROR] Ошибка генерации: {error_msg}")
-        # Отправляем админу реальную ошибку
-        send_message(ADMIN_CHAT_ID, f"⚠️ Генерация текста провалилась, использован fallback.\nПричина: {error_msg[:300]}")
+        print(f"[ERROR] Ошибка генерации: {e}")
         full_text = "📊 Скептик с EBITDA: аналитика ритейла.\n\n⚠️ К сожалению, API временно недоступен. Попробуйте позже.\n\n✅ Следите за обновлениями!"
 
     full_text = clean_text(full_text)
@@ -560,16 +587,10 @@ def generate_post():
     post_text = beautify_post(post_text)
     return post_text, image_prompt, topic, format_type
 
-def generate_image(prompt, session_id=None):
+def generate_image(prompt, max_attempts=3):
     if len(prompt) > 100:
         prompt = prompt[:100]
-    
-    if session_id:
-        image_path = f"temp_{session_id}.jpg"
-    else:
-        image_path = f"temp_{int(time.time())}_{random.randint(1000,9999)}.jpg"
-    
-    for attempt in range(3):
+    for attempt in range(max_attempts):
         try:
             unique = f" {random.randint(1, 100000)}"
             full_prompt = prompt + unique
@@ -578,17 +599,17 @@ def generate_image(prompt, session_id=None):
             ts = int(time.time())
             url = f"https://image.pollinations.ai/prompt/{encoded}?width=1200&height=800&seed={seed}&t={ts}"
             print(f"[DEBUG] Pollinations URL (попытка {attempt+1}): {url}")
-            resp = requests.get(url, timeout=IMAGE_TIMEOUT)
+            resp = requests.get(url, timeout=90)
             if resp.status_code == 200:
                 content = resp.content
                 if len(content) < 1000:
                     print(f"[WARN] Слишком маленький файл ({len(content)} байт), повтор")
                     time.sleep(2)
                     continue
-                with open(image_path, "wb") as f:
+                with open("temp_image.jpg", "wb") as f:
                     f.write(content)
                 try:
-                    img = Image.open(image_path)
+                    img = Image.open("temp_image.jpg")
                     if img.width < 50 or img.height < 50:
                         raise Exception("Слишком маленькое")
                     img = img.convert('L')
@@ -596,45 +617,33 @@ def generate_image(prompt, session_id=None):
                     avg = sum(pixels) / len(pixels)
                     if avg < 30:
                         print("[WARN] Обнаружено чёрное изображение, пробуем с упрощённым промптом")
-                        os.remove(image_path)
+                        os.remove("temp_image.jpg")
                         prompt = "retail illustration, business, comparison, sarcastic, modern"
                         continue
                 except:
                     pass
-                return image_path
+                return "temp_image.jpg"
             else:
                 print(f"[WARN] Pollinations вернул {resp.status_code}, попытка {attempt+1}")
         except Exception as e:
             print(f"[WARN] Ошибка Pollinations (попытка {attempt+1}): {e}")
         time.sleep(3)
-    
     try:
         print("[DEBUG] Последняя попытка с минимальным промптом")
         url = f"https://image.pollinations.ai/prompt/business%20illustration?width=1200&height=800&seed={random.randint(1,999999)}&t={int(time.time())}"
-        resp = requests.get(url, timeout=IMAGE_TIMEOUT)
+        resp = requests.get(url, timeout=90)
         if resp.status_code == 200 and len(resp.content) > 1000:
-            with open(image_path, "wb") as f:
+            with open("temp_image.jpg", "wb") as f:
                 f.write(resp.content)
-            return image_path
+            return "temp_image.jpg"
     except:
         pass
-    
     print("[ERROR] Все попытки генерации картинки провалились")
-    if os.path.exists(image_path):
-        os.remove(image_path)
     return None
 
-def cleanup_temp_image(image_path):
-    try:
-        if image_path and os.path.exists(image_path):
-            os.remove(image_path)
-            print(f"[DEBUG] Удалён временный файл: {image_path}")
-    except Exception as e:
-        print(f"[WARN] Ошибка удаления {image_path}: {e}")
-
-# ======================== ПУБЛИКАЦИЯ =========================
+# ======================== ПУБЛИКАЦИЯ (С ПРАВИЛЬНЫМ ФОРМАТИРОВАНИЕМ) =========================
 def publish_text_only(text):
-    parts = split_into_parts(text, max_len=SPLIT_MESSAGE_LEN)
+    parts = split_into_parts(text, max_len=1000)
     for part in parts:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         data = {"chat_id": TELEGRAM_CHAT_ID, "text": part, "parse_mode": "HTML"}
@@ -646,7 +655,7 @@ def publish_text_only(text):
 def send_for_approval_no_image(post_text, topic, format_type):
     session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
     save_post(session_id, post_text, "", "", topic, format_type)
-    parts = split_into_parts(post_text, max_len=SPLIT_MESSAGE_LEN)
+    parts = split_into_parts(post_text, max_len=1000)
     total = len(parts)
     for i, part in enumerate(parts, 1):
         if total == 1:
@@ -689,7 +698,7 @@ def publish_to_telegram(text, image_path, session_id=None):
             message_id = msg_data.get('result', {}).get('message_id')
             if message_id:
                 execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (message_id, session_id))
-    parts = split_into_parts(text, max_len=SPLIT_MESSAGE_LEN)
+    parts = split_into_parts(text, max_len=1000)
     for part in parts:
         text_data = {"chat_id": TELEGRAM_CHAT_ID, "text": part, "parse_mode": "HTML"}
         resp = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=text_data, timeout=30)
@@ -707,7 +716,7 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic, fo
         if resp.status_code != 200:
             print(f"[ERROR] Ошибка отправки фото на модерацию: {resp.text}")
             return False
-    parts = split_into_parts(post_text, max_len=SPLIT_MESSAGE_LEN)
+    parts = split_into_parts(post_text, max_len=1000)
     total = len(parts)
     for i, part in enumerate(parts, 1):
         if total == 1:
@@ -736,13 +745,12 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic, fo
     return True
 
 def schedule_publish(session_id):
-    now = datetime.utcnow()
-    publish_time = now.replace(hour=7, minute=0, second=0, microsecond=0)
+    now = datetime.now(MOSCOW_TZ)
+    publish_time = now.replace(hour=10, minute=0, second=0, microsecond=0)
     if now >= publish_time:
         publish_time += timedelta(days=1)
     update_post_status(session_id, 'approved', scheduled_time=publish_time)
-    msk_time = publish_time + timedelta(hours=3)
-    send_message(ADMIN_CHAT_ID, f"✅ Пост одобрен и запланирован на {msk_time.strftime('%d.%m.%Y %H:%M')} МСК.")
+    send_message(ADMIN_CHAT_ID, f"✅ Пост одобрен и запланирован на {publish_time.strftime('%d.%m.%Y %H:%M')} МСК.")
 
 def send_message(chat_id, text, reply_markup=None):
     try:
@@ -847,7 +855,7 @@ def process_callback(callback_data, chat_id, message_id):
             answer_callback(chat_id, message_id, "🔄 Генерирую новый...")
             try:
                 new_text, new_prompt, new_topic, new_format = generate_post()
-                new_img = generate_image(new_prompt, session_id)
+                new_img = generate_image(new_prompt)
                 if not new_img:
                     send_for_approval_no_image(new_text, new_topic, new_format)
                     delete_post(session_id)
@@ -856,7 +864,6 @@ def process_callback(callback_data, chat_id, message_id):
                 new_sid = f"{int(time.time())}_{random.randint(1000,9999)}"
                 delete_post(session_id)
                 send_for_approval(new_text, new_img, new_prompt, new_sid, new_topic, new_format)
-                cleanup_temp_image(new_img)
                 answer_callback(chat_id, message_id, "🔄 Новый пост отправлен.")
             except Exception as e:
                 answer_callback(chat_id, message_id, f"❌ Ошибка: {str(e)[:100]}")
@@ -877,16 +884,6 @@ def answer_callback(chat_id, message_id, text):
         pass
 
 def handle_admin_command(text, chat_id):
-    # Режим редактирования поста
-    if chat_id in edit_mode:
-        session_id = edit_mode.pop(chat_id)
-        new_text = beautify_post(clean_text(text))
-        update_post_text(session_id, new_text)
-        send_message(chat_id, "✅ Текст обновлён.")
-        send_admin_menu(chat_id)
-        return
-
-    # Режим ожидания промпта
     if chat_id in awaiting_prompt:
         if text == "/cancel":
             del awaiting_prompt[chat_id]
@@ -975,19 +972,14 @@ def handle_admin_command(text, chat_id):
 # ======================== ПОЛЛИНГ =========================
 def poll_updates():
     offset = 0
-    backoff = 1
     while True:
         try:
             resp = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates", params={"offset": offset, "timeout": 30, "allowed_updates": ["callback_query", "message"]}, timeout=35)
             if resp.status_code != 200:
-                print(f"[WARN] getUpdates ошибка {resp.status_code}, backoff {backoff}s")
-                time.sleep(backoff)
-                backoff = min(backoff * 2, 60)
+                time.sleep(5)
                 continue
-            backoff = 1
             data = resp.json()
             if not data.get("ok"):
-                print(f"[WARN] getUpdates ошибка: {data}")
                 time.sleep(5)
                 continue
             for update in data.get("result", []):
@@ -1009,13 +1001,12 @@ def poll_updates():
                     if text:
                         handle_admin_command(text, chat_id)
         except Exception as e:
-            print(f"[ERROR] poll_updates: {e}, backoff {backoff}s")
-            time.sleep(backoff)
-            backoff = min(backoff * 2, 60)
+            print(f"[ERROR] poll_updates: {e}")
+            time.sleep(5)
 
 # ======================== ОСТАЛЬНЫЙ КОД =========================
 def check_and_repost():
-    cutoff = (datetime.utcnow() - timedelta(days=30)).isoformat()
+    cutoff = (datetime.now() - timedelta(days=30)).isoformat()
     rows = execute_query(
         'SELECT session_id, text FROM posts WHERE status = \'published\' AND reposted = FALSE AND rating >= 3 AND published_at <= ?',
         (cutoff,), fetch=True
@@ -1026,19 +1017,18 @@ def check_and_repost():
             print(f"[DEBUG] Повторно опубликован пост {row['session_id']}")
 
 def publish_scheduled_posts():
-    print(f"[{datetime.utcnow()}] Проверка запланированных постов...")
+    print(f"[{datetime.now()}] Проверка запланированных постов...")
     posts = get_approved_posts_to_publish()
     for p in posts:
         if publish_to_telegram(p["text"], p["image_path"], p["session_id"]):
             update_post_status(p["session_id"], 'published')
-            print(f"[{datetime.utcnow()}] ✅ Опубликован {p['session_id']}")
-            cleanup_temp_image(p["image_path"])
+            print(f"[{datetime.now()}] ✅ Опубликован {p['session_id']}")
         else:
             if publish_text_only(p["text"]):
                 update_post_status(p["session_id"], 'published')
-                print(f"[{datetime.utcnow()}] ✅ Опубликован текст {p['session_id']}")
+                print(f"[{datetime.now()}] ✅ Опубликован текст {p['session_id']}")
             else:
-                print(f"[{datetime.utcnow()}] ❌ Ошибка публикации {p['session_id']}")
+                print(f"[{datetime.now()}] ❌ Ошибка публикации {p['session_id']}")
 
 def record_publish_time(post_id, views, reactions):
     if db_type == 'postgres':
@@ -1065,7 +1055,7 @@ def analyze_best_time():
     return None
 
 def digest_job():
-    week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
+    week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
         'SELECT id, text, rating, message_id, views, reactions FROM posts WHERE status = \'published\' AND published_at >= ? ORDER BY rating DESC LIMIT 5',
         (week_ago,), fetch=True
@@ -1114,40 +1104,39 @@ def weekly_report():
     send_message(ADMIN_CHAT_ID, msg)
 
 def job(auto_publish=False):
-    print(f"[DEBUG] job started at {datetime.utcnow()}")
-    send_message(ADMIN_CHAT_ID, f"🔄 Генерация поста начата в {datetime.utcnow().strftime('%H:%M:%S')} UTC")
+    print(f"[DEBUG] job started at {datetime.now()}")
+    send_message(ADMIN_CHAT_ID, f"🔄 Генерация поста начата в {datetime.now().strftime('%H:%M:%S')}")
     check_and_repost()
     print(f"[DEBUG] check_and_repost done")
-    print(f"[{datetime.utcnow()}] Генерация поста...")
+    print(f"[{datetime.now()}] Генерация поста...")
     try:
         post_text, image_prompt, topic, format_type = generate_post()
         print(f"[DEBUG] post_text получен, длина {len(post_text)}")
-        session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
-        image_path = generate_image(image_prompt, session_id)
+        image_path = generate_image(image_prompt)
         print(f"[DEBUG] image_path = {image_path}")
         if not image_path:
             print("[WARN] Картинка не сгенерирована, публикую только текст")
             if auto_publish:
                 publish_text_only(post_text)
-                print(f"[{datetime.utcnow()}] ✅ Пост без картинки опубликован (авто)")
+                print(f"[{datetime.now()}] ✅ Пост без картинки опубликован (авто)")
             else:
                 send_for_approval_no_image(post_text, topic, format_type)
             return
 
         if auto_publish:
-            if publish_to_telegram(post_text, image_path, session_id):
-                print(f"[{datetime.utcnow()}] ✅ Пост опубликован (авто)")
-                send_message(ADMIN_CHAT_ID, f"✅ Авто-пост опубликован в {datetime.utcnow().strftime('%H:%M')} UTC")
+            if publish_to_telegram(post_text, image_path):
+                print(f"[{datetime.now()}] ✅ Пост опубликован (авто)")
+                send_message(ADMIN_CHAT_ID, f"✅ Авто-пост опубликован в {datetime.now().strftime('%H:%M')}")
             else:
-                print(f"[{datetime.utcnow()}] ❌ Ошибка авто-публикации")
-            cleanup_temp_image(image_path)
+                print(f"[{datetime.now()}] ❌ Ошибка авто-публикации")
         else:
+            session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
             ok = send_for_approval(post_text, image_path, image_prompt, session_id, topic, format_type)
             if ok:
-                print(f"[{datetime.utcnow()}] ✅ Пост отправлен на модерацию")
+                print(f"[{datetime.now()}] ✅ Пост отправлен на модерацию")
                 send_message(ADMIN_CHAT_ID, "✅ Пост отправлен на модерацию!")
             else:
-                print(f"[{datetime.utcnow()}] ❌ Ошибка модерации")
+                print(f"[{datetime.now()}] ❌ Ошибка модерации")
                 send_message(ADMIN_CHAT_ID, "❌ Ошибка модерации")
     except Exception as e:
         print(f"[ERROR] job: {e}")
@@ -1156,9 +1145,9 @@ def job(auto_publish=False):
         raise
 
 # ======================== ВЕБ-СЕРВЕР =========================
-def run_job_async(auto_publish=False):
+def run_job_async():
     try:
-        job(auto_publish=auto_publish)
+        job(auto_publish=False)
     except Exception as e:
         print(f"[ERROR] Асинхронный job: {e}")
         traceback.print_exc()
@@ -1166,16 +1155,28 @@ def run_job_async(auto_publish=False):
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/test':
-            threading.Thread(target=lambda: run_job_async(auto_publish=False), daemon=True).start()
+            threading.Thread(target=run_job_async, daemon=True).start()
             self.send_response(200)
             self.end_headers()
             self.wfile.write("✅ Генерация поста запущена в фоне. Результат придёт в Telegram через 1-2 минуты.".encode())
             return
         elif self.path == '/test_publish':
-            threading.Thread(target=lambda: run_job_async(auto_publish=True), daemon=True).start()
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write("✅ Авто-публикация запущена в фоне. Результат придёт в Telegram.".encode())
+            old_stdout = sys.stdout
+            sys.stdout = io.StringIO()
+            try:
+                job(auto_publish=True)
+                output = sys.stdout.getvalue()
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(f"✅ Успешно (авто-публикация)!\n\n{output}".encode())
+            except Exception as e:
+                output = sys.stdout.getvalue()
+                error_text = traceback.format_exc()
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(f"❌ ОШИБКА: {str(e)}\n\n{output}\n\nСТЕК:\n{error_text}".encode())
+            finally:
+                sys.stdout = old_stdout
             return
         else:
             self.send_response(200)
@@ -1203,14 +1204,14 @@ threading.Thread(target=keep_alive, daemon=True).start()
 threading.Thread(target=poll_updates, daemon=True).start()
 
 # ======================== РАСПИСАНИЕ =========================
-schedule.every().day.at("15:00").do(lambda: job(auto_publish=False))  # 18:00 МСК
-schedule.every().day.at("07:00").do(publish_scheduled_posts)          # 10:00 МСК
+schedule.every().day.at("15:00").do(lambda: job(auto_publish=False))
+schedule.every().day.at("07:00").do(publish_scheduled_posts)
 schedule.every().sunday.at("17:00").do(weekly_report)
 schedule.every().sunday.at("17:00").do(digest_job)
 schedule.every().day.at("03:00").do(backup_db)
 
 print("Бот запущен. Ожидание расписания...")
-print(f"Провайдер: OpenRouter")
+print(f"Провайдер: {API_PROVIDER}, Модель: {MODEL_NAME}")
 print("Модерация каждый день в 18:00 МСК, публикация в 10:00 МСК.")
 print("Для админа доступно меню по команде /start или /help")
 
