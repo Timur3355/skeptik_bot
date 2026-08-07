@@ -27,8 +27,8 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-API_PROVIDER = os.getenv("API_PROVIDER", "openai").lower()
-MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-v3")  # ChatAnywhere модель
+API_PROVIDER = os.getenv("API_PROVIDER", "groq").lower()  # по умолчанию Groq
+MODEL_NAME = os.getenv("MODEL_NAME", "mixtral-8x7b-32768")
 
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
@@ -66,12 +66,23 @@ PROVIDER_CONFIG = {
             "Authorization": f"Bearer {key}",
             "HTTP-Referer": "https://skeptik-bot.onrender.com"
         }
+    },
+    "groq": {
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "default_model": "mixtral-8x7b-32768",
+        "headers": lambda key: {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
+    },
+    "deepseek": {
+        "url": "https://api.deepseek.com/chat/completions",
+        "default_model": "deepseek-chat",
+        "headers": lambda key: {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
     }
 }
 
-FALLBACK_PROVIDERS = ["openai", "openrouter"]
+# Порядок fallback: сначала выбранный провайдер, потом остальные
+FALLBACK_PROVIDERS = ["groq", "openai", "openrouter", "deepseek"]
 
-config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["openai"])
+config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["groq"])
 API_URL = config["url"]
 API_HEADERS_FUNC = config["headers"]
 API_DEFAULT_MODEL = config["default_model"]
@@ -267,7 +278,7 @@ def get_topic_from_news():
         "https://www.rbc.ru/rss/",
         "https://www.kommersant.ru/RSS/news.xml",
         "https://lenta.ru/rss/news",
-        "https://www.vedomosti.ru/rss/news"  # добавлен для актуальности
+        "https://www.vedomosti.ru/rss/news"
     ]
     keywords = ["ozon", "wildberries", "магнит", "ритейл", "торговля", "нефть", "лукойл", "маркетплейс"]
     try:
@@ -397,17 +408,11 @@ def clean_text(text):
     return text.strip()
 
 def beautify_post(text):
-    """
-    Разбивает текст на абзацы (2–3 предложения), выделяет числа жирным через HTML <b>.
-    Удаляет **, если они есть (ошибка разметки)
-    """
     if not text:
         return ""
     text = re.sub(r'\s+', ' ', text).strip()
-    # Удаляем **, если они есть (чтобы не было видно)
     text = re.sub(r'\*\*', '', text)
 
-    # Извлекаем Action Item
     action_text = ""
     match = re.search(r'(✅.*?)(?=\s*[A-Z#]|$)', text, re.DOTALL)
     if not match:
@@ -418,7 +423,6 @@ def beautify_post(text):
         if not action_text.startswith('✅'):
             action_text = '✅ ' + action_text
 
-    # Разбиваем на предложения и группируем по 2-3 в абзац
     sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
     paragraphs = []
     i = 0
@@ -431,7 +435,6 @@ def beautify_post(text):
             i += 1
     text = '\n\n'.join(paragraphs)
 
-    # Выделяем числа жирным (HTML)
     def replacer(m):
         num = m.group(0)
         if not re.search(r'<b>.*?' + re.escape(num) + r'.*?</b>', text):
@@ -439,7 +442,6 @@ def beautify_post(text):
         return num
     text = re.sub(r'\b(\d+[.,]?\d*)\b', replacer, text)
 
-    # Добавляем Action Item в конец
     if action_text:
         hashtag_match = re.search(r'(#\w+(?:\s*#\w+)*)$', text)
         if hashtag_match:
@@ -449,14 +451,10 @@ def beautify_post(text):
         else:
             text = text + f'\n\n<b>{action_text}</b>'
 
-    # Убираем лишние пустые строки
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text
 
 def split_into_parts(text, max_len=1000):
-    """
-    Разбивает текст на части, сохраняя абзацы (двойные переносы).
-    """
     if len(text) <= max_len:
         return [text]
     paragraphs = text.split('\n\n')
@@ -493,7 +491,8 @@ def split_into_parts(text, max_len=1000):
 
 # ======================== FALLBACK API =========================
 def call_api_with_fallback(system_prompt, user_prompt, max_tokens=400, temperature=0.85):
-    providers_to_try = FALLBACK_PROVIDERS
+    # Пытаемся сначала вызвать выбранный провайдер, потом остальные
+    providers_to_try = [API_PROVIDER] + [p for p in FALLBACK_PROVIDERS if p != API_PROVIDER]
     last_error = None
     for provider_name in providers_to_try:
         try:
@@ -585,12 +584,9 @@ def generate_post():
         post_text = full_text.strip()
         image_prompt = ""
 
-    # Улучшаем промпт для картинки, если он короткий
     if len(image_prompt) < 10:
-        # Используем тему и формат для создания качественного промпта
         image_prompt = f"modern business illustration, {topic}, financial data, charts, sarcastic, colorful, infographic style"
     else:
-        # Добавляем стиль, если его нет
         if "illustration" not in image_prompt.lower():
             image_prompt += ", modern business illustration, infographic, colorful"
 
@@ -599,7 +595,7 @@ def generate_post():
 
 def generate_image(prompt, max_attempts=3):
     if len(prompt) > 200:
-        prompt = prompt[:200]  # увеличил лимит для лучшего качества
+        prompt = prompt[:200]
     for attempt in range(max_attempts):
         try:
             unique = f" {random.randint(1, 100000)}"
@@ -628,7 +624,6 @@ def generate_image(prompt, max_attempts=3):
                     if avg < 30:
                         print("[WARN] Обнаружено чёрное изображение, пробуем с упрощённым промптом")
                         os.remove("temp_image.jpg")
-                        # упрощаем промпт, но сохраняем тему
                         prompt = "business illustration, financial data, modern, colorful"
                         continue
                 except:
@@ -652,7 +647,7 @@ def generate_image(prompt, max_attempts=3):
     print("[ERROR] Все попытки генерации картинки провалились")
     return None
 
-# ======================== ПУБЛИКАЦИЯ (С ПРАВИЛЬНЫМ ФОРМАТИРОВАНИЕМ) =========================
+# ======================== ПУБЛИКАЦИЯ =========================
 def publish_text_only(text):
     parts = split_into_parts(text, max_len=1000)
     for part in parts:
