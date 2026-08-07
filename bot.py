@@ -27,9 +27,8 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Используем только ChatAnywhere (openai)
-API_PROVIDER = "openai"
-MODEL_NAME = "gpt-4o-mini"  # стабильная бесплатная модель
+API_PROVIDER = os.getenv("API_PROVIDER", "openai").lower()
+MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-v3")  # ChatAnywhere модель
 
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
@@ -53,16 +52,26 @@ POST_FORMATS = {
     6: "мем"
 }
 
-# Только один провайдер – ChatAnywhere
 PROVIDER_CONFIG = {
     "openai": {
         "url": "https://api.chatanywhere.tech/v1/chat/completions",
-        "default_model": "gpt-4o-mini",
+        "default_model": "deepseek-v3",
         "headers": lambda key: {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
+    },
+    "openrouter": {
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "default_model": "microsoft/phi-3-mini-128k-instruct:free",
+        "headers": lambda key: {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}",
+            "HTTP-Referer": "https://skeptik-bot.onrender.com"
+        }
     }
 }
 
-config = PROVIDER_CONFIG["openai"]
+FALLBACK_PROVIDERS = ["openai", "openrouter"]
+
+config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["openai"])
 API_URL = config["url"]
 API_HEADERS_FUNC = config["headers"]
 API_DEFAULT_MODEL = config["default_model"]
@@ -130,13 +139,13 @@ def init_db():
             "Ты — автор канала «Скептик с EBITDA».\n"
             "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
             "НЕ выводи <think>, рассуждения — только готовый пост.\n"
-            "Используй только актуальные данные (2024–2026 год).\n"
+            "Используй ТОЛЬКО свежие новости (за последние 2–3 месяца).\n"
             "Пост должен быть КОРОТКИМ: максимум 400 символов (3–4 абзаца).\n"
             "Структура поста (ОБЯЗАТЕЛЬНО):\n"
             "1. Заголовок с эмодзи (например, 🚨).\n"
             "2. Каждый новый смысловой блок начинай с эмодзи (📉, 🏬, 💰, ⚠️).\n"
             "3. Ставь двойной перенос между абзацами.\n"
-            "4. Ключевые цифры выделяй жирным через <b>...</b>.\n"
+            "4. Ключевые цифры выделяй жирным через HTML-тег <b>...</b> (НЕ используй **).\n"
             "5. В конце — Action Item с ✅ (отдельно).\n"
             "6. После Action Item — источник и хештеги (#тег1 #тег2).\n"
             "7. Не используй разделители вроде '---'.\n"
@@ -195,13 +204,13 @@ def init_db():
                 "Ты — автор канала «Скептик с EBITDA».\n"
                 "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
                 "НЕ выводи <think>, рассуждения — только готовый пост.\n"
-                "Используй только актуальные данные (2024–2026 год).\n"
+                "Используй ТОЛЬКО свежие новости (за последние 2–3 месяца).\n"
                 "Пост должен быть КОРОТКИМ: максимум 400 символов (3–4 абзаца).\n"
                 "Структура поста (ОБЯЗАТЕЛЬНО):\n"
                 "1. Заголовок с эмодзи (например, 🚨).\n"
                 "2. Каждый новый смысловой блок начинай с эмодзи (📉, 🏬, 💰, ⚠️).\n"
                 "3. Ставь двойной перенос между абзацами.\n"
-                "4. Ключевые цифры выделяй жирным через <b>...</b>.\n"
+                "4. Ключевые цифры выделяй жирным через HTML-тег <b>...</b> (НЕ используй **).\n"
                 "5. В конце — Action Item с ✅ (отдельно).\n"
                 "6. После Action Item — источник и хештеги (#тег1 #тег2).\n"
                 "7. Не используй разделители вроде '---'.\n"
@@ -257,9 +266,10 @@ def get_topic_from_news():
     rss_urls = [
         "https://www.rbc.ru/rss/",
         "https://www.kommersant.ru/RSS/news.xml",
-        "https://lenta.ru/rss/news"
+        "https://lenta.ru/rss/news",
+        "https://www.vedomosti.ru/rss/news"  # добавлен для актуальности
     ]
-    keywords = ["ozon", "wildberries", "магнит", "ритейл", "торговля", "нефть", "лукойл"]
+    keywords = ["ozon", "wildberries", "магнит", "ритейл", "торговля", "нефть", "лукойл", "маркетплейс"]
     try:
         for url in rss_urls:
             feed = feedparser.parse(url)
@@ -387,10 +397,17 @@ def clean_text(text):
     return text.strip()
 
 def beautify_post(text):
+    """
+    Разбивает текст на абзацы (2–3 предложения), выделяет числа жирным через HTML <b>.
+    Удаляет **, если они есть (ошибка разметки)
+    """
     if not text:
         return ""
     text = re.sub(r'\s+', ' ', text).strip()
+    # Удаляем **, если они есть (чтобы не было видно)
+    text = re.sub(r'\*\*', '', text)
 
+    # Извлекаем Action Item
     action_text = ""
     match = re.search(r'(✅.*?)(?=\s*[A-Z#]|$)', text, re.DOTALL)
     if not match:
@@ -401,18 +418,20 @@ def beautify_post(text):
         if not action_text.startswith('✅'):
             action_text = '✅ ' + action_text
 
+    # Разбиваем на предложения и группируем по 2-3 в абзац
     sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
     paragraphs = []
     i = 0
     while i < len(sentences):
-        if i+1 < len(sentences):
-            paragraphs.append(sentences[i] + ' ' + sentences[i+1])
+        if i + 1 < len(sentences):
+            paragraphs.append(sentences[i] + ' ' + sentences[i + 1])
             i += 2
         else:
             paragraphs.append(sentences[i])
             i += 1
     text = '\n\n'.join(paragraphs)
 
+    # Выделяем числа жирным (HTML)
     def replacer(m):
         num = m.group(0)
         if not re.search(r'<b>.*?' + re.escape(num) + r'.*?</b>', text):
@@ -420,6 +439,7 @@ def beautify_post(text):
         return num
     text = re.sub(r'\b(\d+[.,]?\d*)\b', replacer, text)
 
+    # Добавляем Action Item в конец
     if action_text:
         hashtag_match = re.search(r'(#\w+(?:\s*#\w+)*)$', text)
         if hashtag_match:
@@ -429,10 +449,14 @@ def beautify_post(text):
         else:
             text = text + f'\n\n<b>{action_text}</b>'
 
+    # Убираем лишние пустые строки
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text
 
 def split_into_parts(text, max_len=1000):
+    """
+    Разбивает текст на части, сохраняя абзацы (двойные переносы).
+    """
     if len(text) <= max_len:
         return [text]
     paragraphs = text.split('\n\n')
@@ -467,44 +491,50 @@ def split_into_parts(text, max_len=1000):
         result_parts.append(current_part)
     return result_parts if result_parts else [text[:max_len] + "..."]
 
-# ======================== ВЫЗОВ API (ТОЛЬКО CHATANYWHERE С ДИАГНОСТИКОЙ) =========================
-def call_api(system_prompt, user_prompt, max_tokens=400, temperature=0.85):
-    headers = API_HEADERS_FUNC(DEEPSEEK_API_KEY)
-    payload = {
-        "model": MODEL_NAME,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "temperature": temperature,
-        "max_tokens": max_tokens
-    }
-    # Логируем часть ключа для диагностики (первые 6 символов)
-    key_preview = DEEPSEEK_API_KEY[:6] if DEEPSEEK_API_KEY else "НЕТ КЛЮЧА"
-    print(f"[DEBUG] Используется ключ: {key_preview}...")
-    print(f"[DEBUG] URL: {API_URL}")
-    print(f"[DEBUG] Модель: {MODEL_NAME}")
+# ======================== FALLBACK API =========================
+def call_api_with_fallback(system_prompt, user_prompt, max_tokens=400, temperature=0.85):
+    providers_to_try = FALLBACK_PROVIDERS
+    last_error = None
+    for provider_name in providers_to_try:
+        try:
+            prov_config = PROVIDER_CONFIG.get(provider_name)
+            if not prov_config:
+                continue
+            if not DEEPSEEK_API_KEY:
+                continue
+            url = prov_config["url"]
+            headers = prov_config["headers"](DEEPSEEK_API_KEY)
+            model = prov_config.get("default_model", MODEL_NAME)
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "temperature": temperature,
+                "max_tokens": max_tokens
+            }
+            if provider_name == "openrouter":
+                headers["HTTP-Referer"] = "https://skeptik-bot.onrender.com"
+            print(f"[DEBUG] Попытка запроса к {provider_name} с моделью {model}...")
+            response = requests.post(url, headers=headers, json=payload, timeout=90)
+            if response.status_code == 200:
+                data = response.json()
+                if "choices" in data and len(data["choices"]) > 0:
+                    content = data["choices"][0]["message"]["content"]
+                    if content:
+                        print(f"[DEBUG] Успешный ответ от {provider_name}")
+                        return content
+            else:
+                print(f"[WARN] {provider_name} вернул {response.status_code}: {response.text}")
+                last_error = f"{provider_name} {response.status_code}: {response.text}"
+        except Exception as e:
+            print(f"[WARN] Ошибка при запросе к {provider_name}: {e}")
+            last_error = str(e)
+            time.sleep(2)
+    raise Exception(f"Все API провайдеры недоступны. Последняя ошибка: {last_error}")
 
-    response = requests.post(API_URL, headers=headers, json=payload, timeout=90)
-    if response.status_code == 200:
-        data = response.json()
-        if "choices" in data and len(data["choices"]) > 0:
-            content = data["choices"][0]["message"]["content"]
-            if content:
-                return content
-    else:
-        # Если ошибка – выводим полный ответ для диагностики
-        error_text = response.text
-        print(f"[ERROR] API вернул {response.status_code}: {error_text}")
-        # Проверяем, не истёк ли ключ или не нужно ли обновить
-        if response.status_code == 403 and "free ApiKey" in error_text:
-            raise Exception("Ваш ChatAnywhere ключ устарел. Получите новый на https://api.chatanywhere.tech/v1/oauth/free/render")
-        elif response.status_code == 401:
-            raise Exception("Неверный API-ключ. Проверьте DEEPSEEK_API_KEY в настройках Render.")
-        else:
-            raise Exception(f"API вернул {response.status_code}: {error_text}")
-
-# ======================== ГЕНЕРАЦИЯ ПОСТА =========================
+# ======================== ГЕНЕРАЦИЯ ПОСТА И КАРТИНКИ =========================
 def generate_post():
     topic = get_topic_by_analytics()
     format_type = POST_FORMATS.get(datetime.now().weekday(), "новость")
@@ -516,13 +546,13 @@ def generate_post():
             "Ты — автор канала «Скептик с EBITDA».\n"
             "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
             "НЕ выводи <think>, рассуждения — только готовый пост.\n"
-            "Используй только актуальные данные (2024–2026 год).\n"
+            "Используй ТОЛЬКО свежие новости (за последние 2–3 месяца).\n"
             "Пост должен быть КОРОТКИМ: максимум 400 символов (3–4 абзаца).\n"
             "Структура поста (ОБЯЗАТЕЛЬНО):\n"
             "1. Заголовок с эмодзи (например, 🚨).\n"
             "2. Каждый новый смысловой блок начинай с эмодзи (📉, 🏬, 💰, ⚠️).\n"
             "3. Ставь двойной перенос между абзацами.\n"
-            "4. Ключевые цифры выделяй жирным через <b>...</b>.\n"
+            "4. Ключевые цифры выделяй жирным через HTML-тег <b>...</b> (НЕ используй **).\n"
             "5. В конце — Action Item с ✅ (отдельно).\n"
             "6. После Action Item — источник и хештеги (#тег1 #тег2).\n"
             "7. Не используй разделители вроде '---'.\n"
@@ -538,11 +568,10 @@ def generate_post():
     user_prompt = f"Напиши пост на тему: {topic}. {format_style} Используй реальные цифры из отчётов."
 
     try:
-        full_text = call_api(system_prompt, user_prompt, max_tokens=400, temperature=0.85)
+        full_text = call_api_with_fallback(system_prompt, user_prompt, max_tokens=400, temperature=0.85)
     except Exception as e:
         print(f"[ERROR] Ошибка генерации: {e}")
-        # Передаём ошибку выше, чтобы отобразить в логах и в запасном тексте
-        full_text = f"📊 Скептик с EBITDA: ошибка API.\n\n⚠️ {str(e)}\n\n✅ Проверьте настройки и попробуйте снова."
+        full_text = "📊 Скептик с EBITDA: аналитика ритейла.\n\n⚠️ К сожалению, API временно недоступен. Попробуйте позже.\n\n✅ Следите за обновлениями!"
 
     full_text = clean_text(full_text)
     if not full_text.endswith(('.', '?', '!', '"', ')')):
@@ -556,15 +585,21 @@ def generate_post():
         post_text = full_text.strip()
         image_prompt = ""
 
+    # Улучшаем промпт для картинки, если он короткий
     if len(image_prompt) < 10:
-        image_prompt = "retail comparison illustration, business graph, sarcastic, modern, colorful"
+        # Используем тему и формат для создания качественного промпта
+        image_prompt = f"modern business illustration, {topic}, financial data, charts, sarcastic, colorful, infographic style"
+    else:
+        # Добавляем стиль, если его нет
+        if "illustration" not in image_prompt.lower():
+            image_prompt += ", modern business illustration, infographic, colorful"
 
     post_text = beautify_post(post_text)
     return post_text, image_prompt, topic, format_type
 
 def generate_image(prompt, max_attempts=3):
-    if len(prompt) > 100:
-        prompt = prompt[:100]
+    if len(prompt) > 200:
+        prompt = prompt[:200]  # увеличил лимит для лучшего качества
     for attempt in range(max_attempts):
         try:
             unique = f" {random.randint(1, 100000)}"
@@ -593,7 +628,8 @@ def generate_image(prompt, max_attempts=3):
                     if avg < 30:
                         print("[WARN] Обнаружено чёрное изображение, пробуем с упрощённым промптом")
                         os.remove("temp_image.jpg")
-                        prompt = "retail illustration, business, comparison, sarcastic, modern"
+                        # упрощаем промпт, но сохраняем тему
+                        prompt = "business illustration, financial data, modern, colorful"
                         continue
                 except:
                     pass
@@ -605,7 +641,7 @@ def generate_image(prompt, max_attempts=3):
         time.sleep(3)
     try:
         print("[DEBUG] Последняя попытка с минимальным промптом")
-        url = f"https://image.pollinations.ai/prompt/business%20illustration?width=1200&height=800&seed={random.randint(1,999999)}&t={int(time.time())}"
+        url = f"https://image.pollinations.ai/prompt/business%20illustration%20finance%20chart?width=1200&height=800&seed={random.randint(1,999999)}&t={int(time.time())}"
         resp = requests.get(url, timeout=90)
         if resp.status_code == 200 and len(resp.content) > 1000:
             with open("temp_image.jpg", "wb") as f:
@@ -616,7 +652,7 @@ def generate_image(prompt, max_attempts=3):
     print("[ERROR] Все попытки генерации картинки провалились")
     return None
 
-# ======================== ПУБЛИКАЦИЯ =========================
+# ======================== ПУБЛИКАЦИЯ (С ПРАВИЛЬНЫМ ФОРМАТИРОВАНИЕМ) =========================
 def publish_text_only(text):
     parts = split_into_parts(text, max_len=1000)
     for part in parts:
