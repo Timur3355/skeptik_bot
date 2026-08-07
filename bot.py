@@ -27,8 +27,9 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()
-MODEL_NAME = os.getenv("MODEL_NAME", "google/gemini-2.0-flash-exp:free")
+# Переключаемся на OpenRouter с проверенной бесплатной моделью
+API_PROVIDER = "openrouter"
+MODEL_NAME = "deepseek/deepseek-chat:free"  # проверенная бесплатная модель
 
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
@@ -53,14 +54,9 @@ POST_FORMATS = {
 }
 
 PROVIDER_CONFIG = {
-    "openai": {
-        "url": "https://api.chatanywhere.tech/v1/chat/completions",
-        "default_model": "deepseek-v3",
-        "headers": lambda key: {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
-    },
     "openrouter": {
         "url": "https://openrouter.ai/api/v1/chat/completions",
-        "default_model": "google/gemini-2.0-flash-exp:free",
+        "default_model": "deepseek/deepseek-chat:free",
         "headers": lambda key: {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {key}",
@@ -69,9 +65,10 @@ PROVIDER_CONFIG = {
     }
 }
 
-FALLBACK_PROVIDERS = ["openai", "openrouter"]
+# Используем только OpenRouter
+FALLBACK_PROVIDERS = ["openrouter"]
 
-config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["openrouter"])
+config = PROVIDER_CONFIG["openrouter"]
 API_URL = config["url"]
 API_HEADERS_FUNC = config["headers"]
 API_DEFAULT_MODEL = config["default_model"]
@@ -145,7 +142,7 @@ def init_db():
             "1. Заголовок с эмодзи (например, 🚨).\n"
             "2. Каждый новый смысловой блок начинай с эмодзи (📉, 🏬, 💰, ⚠️).\n"
             "3. Ставь двойной перенос между абзацами.\n"
-            "4. Ключевые цифры выделяй жирным через <b>...</b>.\n"  # Только HTML
+            "4. Ключевые цифры выделяй жирным через <b>...</b>.\n"
             "5. В конце — Action Item с ✅ (отдельно).\n"
             "6. После Action Item — источник и хештеги (#тег1 #тег2).\n"
             "7. Не используй разделители вроде '---'.\n"
@@ -388,7 +385,7 @@ def get_last_posts(limit=5):
     )
     return rows
 
-# ======================== ОБРАБОТКА ТЕКСТА (ВОССТАНОВЛЕНА) =========================
+# ======================== ОБРАБОТКА ТЕКСТА =========================
 def clean_text(text):
     text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
     text = re.sub(r'<think>.*', '', text, flags=re.DOTALL)
@@ -396,14 +393,10 @@ def clean_text(text):
     return text.strip()
 
 def beautify_post(text):
-    """
-    Разбивает текст на абзацы (2–3 предложения), выделяет числа жирным через HTML <b>.
-    """
     if not text:
         return ""
     text = re.sub(r'\s+', ' ', text).strip()
 
-    # Извлекаем Action Item
     action_text = ""
     match = re.search(r'(✅.*?)(?=\s*[A-Z#]|$)', text, re.DOTALL)
     if not match:
@@ -414,20 +407,18 @@ def beautify_post(text):
         if not action_text.startswith('✅'):
             action_text = '✅ ' + action_text
 
-    # Разбиваем на предложения и группируем по 2-3 в абзац
     sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
     paragraphs = []
     i = 0
     while i < len(sentences):
-        if i + 1 < len(sentences):
-            paragraphs.append(sentences[i] + ' ' + sentences[i + 1])
+        if i+1 < len(sentences):
+            paragraphs.append(sentences[i] + ' ' + sentences[i+1])
             i += 2
         else:
             paragraphs.append(sentences[i])
             i += 1
     text = '\n\n'.join(paragraphs)
 
-    # Выделяем числа жирным (HTML)
     def replacer(m):
         num = m.group(0)
         if not re.search(r'<b>.*?' + re.escape(num) + r'.*?</b>', text):
@@ -435,7 +426,6 @@ def beautify_post(text):
         return num
     text = re.sub(r'\b(\d+[.,]?\d*)\b', replacer, text)
 
-    # Добавляем Action Item в конец
     if action_text:
         hashtag_match = re.search(r'(#\w+(?:\s*#\w+)*)$', text)
         if hashtag_match:
@@ -445,14 +435,10 @@ def beautify_post(text):
         else:
             text = text + f'\n\n<b>{action_text}</b>'
 
-    # Убираем лишние пустые строки
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text
 
 def split_into_parts(text, max_len=1000):
-    """
-    Разбивает текст на части, сохраняя абзацы (двойные переносы).
-    """
     if len(text) <= max_len:
         return [text]
     paragraphs = text.split('\n\n')
@@ -497,7 +483,8 @@ def call_api_with_fallback(system_prompt, user_prompt, max_tokens=400, temperatu
             if not prov_config:
                 continue
             if not DEEPSEEK_API_KEY:
-                continue
+                # Если ключа нет, выдаём понятную ошибку
+                raise Exception("API-ключ не задан. Получите ключ на openrouter.ai и установите DEEPSEEK_API_KEY.")
             url = prov_config["url"]
             headers = prov_config["headers"](DEEPSEEK_API_KEY)
             model = prov_config.get("default_model", MODEL_NAME)
@@ -528,9 +515,17 @@ def call_api_with_fallback(system_prompt, user_prompt, max_tokens=400, temperatu
             print(f"[WARN] Ошибка при запросе к {provider_name}: {e}")
             last_error = str(e)
             time.sleep(2)
-    raise Exception(f"Все API провайдеры недоступны. Последняя ошибка: {last_error}")
+    # Если все провайдеры недоступны, выдаём инструкцию
+    error_msg = (
+        "❌ Все API провайдеры недоступны.\n"
+        "Проверьте:\n"
+        "1. DEEPSEEK_API_KEY – должен быть действительным ключом OpenRouter (получить на openrouter.ai).\n"
+        "2. Модель deepseek/deepseek-chat:free доступна бесплатно.\n"
+        f"Последняя ошибка: {last_error}"
+    )
+    raise Exception(error_msg)
 
-# ======================== ГЕНЕРАЦИЯ ПОСТА И КАРТИНКИ =========================
+# ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
     topic = get_topic_by_analytics()
     format_type = POST_FORMATS.get(datetime.now().weekday(), "новость")
@@ -567,7 +562,7 @@ def generate_post():
         full_text = call_api_with_fallback(system_prompt, user_prompt, max_tokens=400, temperature=0.85)
     except Exception as e:
         print(f"[ERROR] Ошибка генерации: {e}")
-        full_text = "📊 Скептик с EBITDA: аналитика ритейла.\n\n⚠️ К сожалению, API временно недоступен. Попробуйте позже.\n\n✅ Следите за обновлениями!"
+        full_text = f"📊 Скептик с EBITDA: аналитика ритейла.\n\n⚠️ Ошибка API: {str(e)[:200]}\n\n✅ Проверьте настройки API и повторите попытку."
 
     full_text = clean_text(full_text)
     if not full_text.endswith(('.', '?', '!', '"', ')')):
@@ -587,6 +582,7 @@ def generate_post():
     post_text = beautify_post(post_text)
     return post_text, image_prompt, topic, format_type
 
+# ======================== ГЕНЕРАЦИЯ КАРТИНКИ =========================
 def generate_image(prompt, max_attempts=3):
     if len(prompt) > 100:
         prompt = prompt[:100]
@@ -641,7 +637,7 @@ def generate_image(prompt, max_attempts=3):
     print("[ERROR] Все попытки генерации картинки провалились")
     return None
 
-# ======================== ПУБЛИКАЦИЯ (С ПРАВИЛЬНЫМ ФОРМАТИРОВАНИЕМ) =========================
+# ======================== ПУБЛИКАЦИЯ =========================
 def publish_text_only(text):
     parts = split_into_parts(text, max_len=1000)
     for part in parts:
