@@ -27,8 +27,8 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-API_PROVIDER = os.getenv("API_PROVIDER", "yandex").lower()  # теперь по умолчанию Yandex
-MODEL_NAME = os.getenv("MODEL_NAME", "yandexgpt-lite")  # yandexgpt или yandexgpt-lite
+API_PROVIDER = os.getenv("API_PROVIDER", "openai").lower()  # только openai (ChatAnywhere)
+MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-v3")
 
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
@@ -57,40 +57,10 @@ PROVIDER_CONFIG = {
         "url": "https://api.chatanywhere.tech/v1/chat/completions",
         "default_model": "deepseek-v3",
         "headers": lambda key: {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
-    },
-    "openrouter": {
-        "url": "https://openrouter.ai/api/v1/chat/completions",
-        "default_model": "microsoft/phi-3-mini-128k-instruct:free",
-        "headers": lambda key: {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}",
-            "HTTP-Referer": "https://skeptik-bot.onrender.com"
-        }
-    },
-    "groq": {
-        "url": "https://api.groq.com/openai/v1/chat/completions",
-        "default_model": "mixtral-8x7b-32768",
-        "headers": lambda key: {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
-    },
-    "deepseek": {
-        "url": "https://api.deepseek.com/chat/completions",
-        "default_model": "deepseek-chat",
-        "headers": lambda key: {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
-    },
-    "yandex": {
-        "url": "https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
-        "default_model": "yandexgpt-lite",
-        "headers": lambda key: {
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json"
-        }
     }
 }
 
-# Порядок fallback: сначала Yandex, потом остальные
-FALLBACK_PROVIDERS = ["yandex", "openai", "openrouter", "groq", "deepseek"]
-
-config = PROVIDER_CONFIG.get(API_PROVIDER, PROVIDER_CONFIG["yandex"])
+config = PROVIDER_CONFIG["openai"]
 API_URL = config["url"]
 API_HEADERS_FUNC = config["headers"]
 API_DEFAULT_MODEL = config["default_model"]
@@ -497,73 +467,7 @@ def split_into_parts(text, max_len=1000):
         result_parts.append(current_part)
     return result_parts if result_parts else [text[:max_len] + "..."]
 
-# ======================== FALLBACK API (С ПОДДЕРЖКОЙ YANDEX) =========================
-def call_api_with_fallback(system_prompt, user_prompt, max_tokens=400, temperature=0.85):
-    providers_to_try = [API_PROVIDER] + [p for p in FALLBACK_PROVIDERS if p != API_PROVIDER]
-    last_error = None
-    for provider_name in providers_to_try:
-        try:
-            prov_config = PROVIDER_CONFIG.get(provider_name)
-            if not prov_config:
-                continue
-            if not DEEPSEEK_API_KEY:
-                continue
-            url = prov_config["url"]
-            headers = prov_config["headers"](DEEPSEEK_API_KEY)
-            model = prov_config.get("default_model", MODEL_NAME)
-
-            # Yandex имеет свой формат запроса
-            if provider_name == "yandex":
-                payload = {
-                    "model": model,
-                    "messages": [
-                        {"role": "user", "text": system_prompt},
-                        {"role": "user", "text": user_prompt}
-                    ],
-                    "temperature": temperature,
-                    "max_tokens": max_tokens
-                }
-            else:
-                payload = {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    "temperature": temperature,
-                    "max_tokens": max_tokens
-                }
-
-            if provider_name == "openrouter":
-                headers["HTTP-Referer"] = "https://skeptik-bot.onrender.com"
-
-            print(f"[DEBUG] Попытка запроса к {provider_name} с моделью {model}...")
-            response = requests.post(url, headers=headers, json=payload, timeout=90)
-            if response.status_code == 200:
-                data = response.json()
-                # Парсим Yandex
-                if provider_name == "yandex":
-                    if "result" in data and "alternatives" in data["result"]:
-                        content = data["result"]["alternatives"][0]["message"]["text"]
-                        if content:
-                            print(f"[DEBUG] Успешный ответ от {provider_name}")
-                            return content
-                else:
-                    if "choices" in data and len(data["choices"]) > 0:
-                        content = data["choices"][0]["message"]["content"]
-                        if content:
-                            print(f"[DEBUG] Успешный ответ от {provider_name}")
-                            return content
-            else:
-                print(f"[WARN] {provider_name} вернул {response.status_code}: {response.text}")
-                last_error = f"{provider_name} {response.status_code}: {response.text}"
-        except Exception as e:
-            print(f"[WARN] Ошибка при запросе к {provider_name}: {e}")
-            last_error = str(e)
-            time.sleep(2)
-    raise Exception(f"Все API провайдеры недоступны. Последняя ошибка: {last_error}")
-
-# ======================== ГЕНЕРАЦИЯ ПОСТА И КАРТИНКИ =========================
+# ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
     topic = get_topic_by_analytics()
     format_type = POST_FORMATS.get(datetime.now().weekday(), "новость")
@@ -596,8 +500,27 @@ def generate_post():
 
     user_prompt = f"Напиши пост на тему: {topic}. {format_style} Используй реальные цифры из отчётов."
 
+    headers = API_HEADERS_FUNC(DEEPSEEK_API_KEY)
+    payload = {
+        "model": MODEL_NAME,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "temperature": 0.85,
+        "max_tokens": 400
+    }
+
     try:
-        full_text = call_api_with_fallback(system_prompt, user_prompt, max_tokens=400, temperature=0.85)
+        response = requests.post(API_URL, headers=headers, json=payload, timeout=90)
+        if response.status_code != 200:
+            raise Exception(f"API вернул {response.status_code}: {response.text}")
+        data = response.json()
+        if "choices" not in data or not data["choices"]:
+            raise Exception("Нет choices")
+        full_text = data["choices"][0]["message"]["content"]
+        if not full_text:
+            raise Exception("Пустой ответ")
     except Exception as e:
         print(f"[ERROR] Ошибка генерации: {e}")
         full_text = "📊 Скептик с EBITDA: аналитика ритейла.\n\n⚠️ К сожалению, API временно недоступен. Попробуйте позже.\n\n✅ Следите за обновлениями!"
@@ -623,6 +546,7 @@ def generate_post():
     post_text = beautify_post(post_text)
     return post_text, image_prompt, topic, format_type
 
+# ======================== ГЕНЕРАЦИЯ КАРТИНКИ =========================
 def generate_image(prompt, max_attempts=3):
     if len(prompt) > 200:
         prompt = prompt[:200]
