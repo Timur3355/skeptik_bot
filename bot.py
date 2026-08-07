@@ -27,9 +27,9 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Переключаемся на OpenRouter с проверенной бесплатной моделью
-API_PROVIDER = "openrouter"
-MODEL_NAME = "deepseek/deepseek-chat:free"  # проверенная бесплатная модель
+# Используем только ChatAnywhere (openai)
+API_PROVIDER = "openai"
+MODEL_NAME = "gpt-4o-mini"  # стабильная бесплатная модель
 
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
@@ -53,22 +53,16 @@ POST_FORMATS = {
     6: "мем"
 }
 
+# Только один провайдер – ChatAnywhere
 PROVIDER_CONFIG = {
-    "openrouter": {
-        "url": "https://openrouter.ai/api/v1/chat/completions",
-        "default_model": "deepseek/deepseek-chat:free",
-        "headers": lambda key: {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}",
-            "HTTP-Referer": "https://skeptik-bot.onrender.com"
-        }
+    "openai": {
+        "url": "https://api.chatanywhere.tech/v1/chat/completions",
+        "default_model": "gpt-4o-mini",
+        "headers": lambda key: {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
     }
 }
 
-# Используем только OpenRouter
-FALLBACK_PROVIDERS = ["openrouter"]
-
-config = PROVIDER_CONFIG["openrouter"]
+config = PROVIDER_CONFIG["openai"]
 API_URL = config["url"]
 API_HEADERS_FUNC = config["headers"]
 API_DEFAULT_MODEL = config["default_model"]
@@ -473,57 +467,42 @@ def split_into_parts(text, max_len=1000):
         result_parts.append(current_part)
     return result_parts if result_parts else [text[:max_len] + "..."]
 
-# ======================== FALLBACK API =========================
-def call_api_with_fallback(system_prompt, user_prompt, max_tokens=400, temperature=0.85):
-    providers_to_try = FALLBACK_PROVIDERS
-    last_error = None
-    for provider_name in providers_to_try:
-        try:
-            prov_config = PROVIDER_CONFIG.get(provider_name)
-            if not prov_config:
-                continue
-            if not DEEPSEEK_API_KEY:
-                # Если ключа нет, выдаём понятную ошибку
-                raise Exception("API-ключ не задан. Получите ключ на openrouter.ai и установите DEEPSEEK_API_KEY.")
-            url = prov_config["url"]
-            headers = prov_config["headers"](DEEPSEEK_API_KEY)
-            model = prov_config.get("default_model", MODEL_NAME)
-            payload = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "temperature": temperature,
-                "max_tokens": max_tokens
-            }
-            if provider_name == "openrouter":
-                headers["HTTP-Referer"] = "https://skeptik-bot.onrender.com"
-            print(f"[DEBUG] Попытка запроса к {provider_name} с моделью {model}...")
-            response = requests.post(url, headers=headers, json=payload, timeout=90)
-            if response.status_code == 200:
-                data = response.json()
-                if "choices" in data and len(data["choices"]) > 0:
-                    content = data["choices"][0]["message"]["content"]
-                    if content:
-                        print(f"[DEBUG] Успешный ответ от {provider_name}")
-                        return content
-            else:
-                print(f"[WARN] {provider_name} вернул {response.status_code}: {response.text}")
-                last_error = f"{provider_name} {response.status_code}: {response.text}"
-        except Exception as e:
-            print(f"[WARN] Ошибка при запросе к {provider_name}: {e}")
-            last_error = str(e)
-            time.sleep(2)
-    # Если все провайдеры недоступны, выдаём инструкцию
-    error_msg = (
-        "❌ Все API провайдеры недоступны.\n"
-        "Проверьте:\n"
-        "1. DEEPSEEK_API_KEY – должен быть действительным ключом OpenRouter (получить на openrouter.ai).\n"
-        "2. Модель deepseek/deepseek-chat:free доступна бесплатно.\n"
-        f"Последняя ошибка: {last_error}"
-    )
-    raise Exception(error_msg)
+# ======================== ВЫЗОВ API (ТОЛЬКО CHATANYWHERE С ДИАГНОСТИКОЙ) =========================
+def call_api(system_prompt, user_prompt, max_tokens=400, temperature=0.85):
+    headers = API_HEADERS_FUNC(DEEPSEEK_API_KEY)
+    payload = {
+        "model": MODEL_NAME,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "temperature": temperature,
+        "max_tokens": max_tokens
+    }
+    # Логируем часть ключа для диагностики (первые 6 символов)
+    key_preview = DEEPSEEK_API_KEY[:6] if DEEPSEEK_API_KEY else "НЕТ КЛЮЧА"
+    print(f"[DEBUG] Используется ключ: {key_preview}...")
+    print(f"[DEBUG] URL: {API_URL}")
+    print(f"[DEBUG] Модель: {MODEL_NAME}")
+
+    response = requests.post(API_URL, headers=headers, json=payload, timeout=90)
+    if response.status_code == 200:
+        data = response.json()
+        if "choices" in data and len(data["choices"]) > 0:
+            content = data["choices"][0]["message"]["content"]
+            if content:
+                return content
+    else:
+        # Если ошибка – выводим полный ответ для диагностики
+        error_text = response.text
+        print(f"[ERROR] API вернул {response.status_code}: {error_text}")
+        # Проверяем, не истёк ли ключ или не нужно ли обновить
+        if response.status_code == 403 and "free ApiKey" in error_text:
+            raise Exception("Ваш ChatAnywhere ключ устарел. Получите новый на https://api.chatanywhere.tech/v1/oauth/free/render")
+        elif response.status_code == 401:
+            raise Exception("Неверный API-ключ. Проверьте DEEPSEEK_API_KEY в настройках Render.")
+        else:
+            raise Exception(f"API вернул {response.status_code}: {error_text}")
 
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post():
@@ -559,10 +538,11 @@ def generate_post():
     user_prompt = f"Напиши пост на тему: {topic}. {format_style} Используй реальные цифры из отчётов."
 
     try:
-        full_text = call_api_with_fallback(system_prompt, user_prompt, max_tokens=400, temperature=0.85)
+        full_text = call_api(system_prompt, user_prompt, max_tokens=400, temperature=0.85)
     except Exception as e:
         print(f"[ERROR] Ошибка генерации: {e}")
-        full_text = f"📊 Скептик с EBITDA: аналитика ритейла.\n\n⚠️ Ошибка API: {str(e)[:200]}\n\n✅ Проверьте настройки API и повторите попытку."
+        # Передаём ошибку выше, чтобы отобразить в логах и в запасном тексте
+        full_text = f"📊 Скептик с EBITDA: ошибка API.\n\n⚠️ {str(e)}\n\n✅ Проверьте настройки и попробуйте снова."
 
     full_text = clean_text(full_text)
     if not full_text.endswith(('.', '?', '!', '"', ')')):
@@ -582,7 +562,6 @@ def generate_post():
     post_text = beautify_post(post_text)
     return post_text, image_prompt, topic, format_type
 
-# ======================== ГЕНЕРАЦИЯ КАРТИНКИ =========================
 def generate_image(prompt, max_attempts=3):
     if len(prompt) > 100:
         prompt = prompt[:100]
