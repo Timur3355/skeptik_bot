@@ -532,7 +532,7 @@ def generate_post(custom_topic=None):
             {"role": "user", "content": user_prompt}
         ],
         "temperature": 0.85,
-        "max_tokens": 250
+        "max_tokens": 350
     }
 
     try:
