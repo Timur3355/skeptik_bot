@@ -26,6 +26,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
+UNSPLASH_ACCESS_KEY = os.getenv("UNSPLASH_ACCESS_KEY")  # новый ключ
 
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
 API_PROVIDER = "openai"
@@ -129,7 +130,7 @@ def init_db():
             "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
             "НЕ выводи <think>, рассуждения — только готовый пост.\n"
             "Используй ТОЛЬКО данные за 2025–2026 годы. Если нет точных цифр, напиши, что данные отсутствуют.\n"
-            "Пост должен быть КОРОТКИМ: не более 400 символов (3–4 предложения). ОБЯЗАТЕЛЬНО заканчивай точкой, восклицанием или вопросом.\n"
+            "Пост должен быть примерно 400–600 символов (4–5 предложений). ОБЯЗАТЕЛЬНО заканчивай точкой, восклицанием или вопросом.\n"
             "Структура поста (ОБЯЗАТЕЛЬНО):\n"
             "1. Заголовок с эмодзи (например, 🚨).\n"
             "2. Каждый новый смысловой блок начинай с эмодзи (📉, 🏬, 💰, ⚠️).\n"
@@ -194,7 +195,7 @@ def init_db():
                 "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
                 "НЕ выводи <think>, рассуждения — только готовый пост.\n"
                 "Используй ТОЛЬКО данные за 2025–2026 годы. Если нет точных цифр, напиши, что данные отсутствуют.\n"
-                "Пост должен быть КОРОТКИМ: не более 400 символов (3–4 предложения). ОБЯЗАТЕЛЬНО заканчивай точкой, восклицанием или вопросом.\n"
+                "Пост должен быть примерно 400–600 символов (4–5 предложений). ОБЯЗАТЕЛЬНО заканчивай точкой, восклицанием или вопросом.\n"
                 "Структура поста (ОБЯЗАТЕЛЬНО):\n"
                 "1. Заголовок с эмодзи (например, 🚨).\n"
                 "2. Каждый новый смысловой блок начинай с эмодзи (📉, 🏬, 💰, ⚠️).\n"
@@ -474,6 +475,45 @@ def split_into_parts(text, max_len=1000):
         result_parts.append(current_part)
     return result_parts if result_parts else [text[:max_len] + "..."]
 
+# ======================== ПОИСК КАРТИНКИ НА UNSPLASH =========================
+def search_image_unsplash(query):
+    if not UNSPLASH_ACCESS_KEY:
+        print("[WARN] UNSPLASH_ACCESS_KEY не задан, возвращаем None")
+        return None
+    try:
+        url = "https://api.unsplash.com/search/photos"
+        params = {
+            "query": query,
+            "per_page": 1,
+            "orientation": "landscape"
+        }
+        headers = {"Authorization": f"Client-ID {UNSPLASH_ACCESS_KEY}"}
+        resp = requests.get(url, params=params, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("results") and len(data["results"]) > 0:
+                image_url = data["results"][0]["urls"]["regular"]
+                # Скачиваем изображение
+                img_resp = requests.get(image_url, timeout=30)
+                if img_resp.status_code == 200:
+                    with open("temp_image.jpg", "wb") as f:
+                        f.write(img_resp.content)
+                    # Проверка качества
+                    try:
+                        img = Image.open("temp_image.jpg")
+                        if img.width < 200 or img.height < 200:
+                            print("[WARN] Слишком маленькое изображение, пробуем следующее")
+                            os.remove("temp_image.jpg")
+                            return None
+                    except:
+                        pass
+                    return "temp_image.jpg"
+        print(f"[WARN] Unsplash вернул статус {resp.status_code}")
+        return None
+    except Exception as e:
+        print(f"[ERROR] Ошибка при запросе к Unsplash: {e}")
+        return None
+
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post(custom_topic=None):
     if custom_topic:
@@ -493,7 +533,7 @@ def generate_post(custom_topic=None):
             "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
             "НЕ выводи <think>, рассуждения — только готовый пост.\n"
             "Используй ТОЛЬКО данные за 2025–2026 годы. Если нет точных цифр, напиши, что данные отсутствуют.\n"
-            "Пост должен быть КОРОТКИМ: не более 400 символов (3–4 предложения). ОБЯЗАТЕЛЬНО заканчивай точкой, восклицанием или вопросом.\n"
+            "Пост должен быть примерно 400–600 символов (4–5 предложений). ОБЯЗАТЕЛЬНО заканчивай точкой, восклицанием или вопросом.\n"
             "Структура поста (ОБЯЗАТЕЛЬНО):\n"
             "1. Заголовок с эмодзи (например, 🚨).\n"
             "2. Каждый новый смысловой блок начинай с эмодзи (📉, 🏬, 💰, ⚠️).\n"
@@ -506,9 +546,9 @@ def generate_post(custom_topic=None):
         )
 
     format_style = {
-        "мем": "Сделай пост с юмором, сарказмом, коротко (до 400 символов).",
-        "новость": "Информативный пост с фактами и датами (до 400 символов).",
-        "аналитика": "Глубокий разбор цифр и трендов, но кратко (до 400 символов)."
+        "мем": "Сделай пост с юмором, сарказмом, коротко (до 500 символов).",
+        "новость": "Информативный пост с фактами и датами (до 500 символов).",
+        "аналитика": "Глубокий разбор цифр и трендов, но кратко (до 500 символов)."
     }.get(format_type, "")
 
     user_prompt = f"Напиши пост на тему: {topic}. {format_style} Используй реальные цифры из отчётов (только 2025–2026 годов)."
@@ -521,7 +561,7 @@ def generate_post(custom_topic=None):
             {"role": "user", "content": user_prompt}
         ],
         "temperature": 0.85,
-        "max_tokens": 600
+        "max_tokens": 700
     }
 
     try:
@@ -559,11 +599,22 @@ def generate_post(custom_topic=None):
     post_text = beautify_post(post_text)
     return post_text, image_prompt, topic, format_type
 
-# ======================== ГЕНЕРАЦИЯ КАРТИНКИ =========================
-def generate_image(prompt, max_attempts=3):
+# ======================== ГЕНЕРАЦИЯ КАРТИНКИ (UNSPLASH + FALLBACK) =========================
+def generate_image(prompt):
+    # Сначала пытаемся найти реальную фотографию через Unsplash
+    if UNSPLASH_ACCESS_KEY:
+        # Извлекаем ключевые слова из промпта (удаляем лишнее)
+        keywords = re.sub(r'[^\w\s]', '', prompt)
+        keywords = keywords[:100]  # ограничим длину
+        img_path = search_image_unsplash(keywords)
+        if img_path:
+            return img_path
+
+    # Если Unsplash не дал результат или ключ отсутствует, пробуем Pollinations (как запасной вариант)
+    print("[WARN] Использую резервную генерацию через Pollinations")
     if len(prompt) > 200:
         prompt = prompt[:200]
-    for attempt in range(max_attempts):
+    for attempt in range(3):
         try:
             unique = f" {random.randint(1, 100000)}"
             full_prompt = prompt + unique
@@ -857,7 +908,6 @@ def answer_callback(chat_id, message_id, text):
         pass
 
 def handle_admin_command(text, chat_id):
-    # Если админ в режиме ожидания промпта
     if chat_id in awaiting_prompt:
         if text == "/cancel":
             del awaiting_prompt[chat_id]
@@ -871,7 +921,6 @@ def handle_admin_command(text, chat_id):
         send_admin_menu(chat_id)
         return
 
-    # Стандартные команды
     if text.startswith('/start') or text.startswith('/help'):
         send_admin_menu(chat_id)
         return
@@ -950,7 +999,6 @@ def handle_admin_command(text, chat_id):
         send_admin_menu(chat_id)
         return
 
-    # Если команда не распознана, показываем меню
     send_admin_menu(chat_id)
 
 # ======================== ПОЛЛИНГ =========================
@@ -1199,6 +1247,7 @@ print(f"Провайдер: {API_PROVIDER}, Модель: {MODEL_NAME}")
 print("Модерация каждый день в 18:00 МСК, публикация в 10:00 МСК.")
 print("Для админа меню открывается автоматически при любом сообщении.")
 print("Ручная генерация: /generate [тема]")
+print("Unsplash: " + ("подключён" if UNSPLASH_ACCESS_KEY else "не подключён (используется резерв)"))
 
 while True:
     schedule.run_pending()
