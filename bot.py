@@ -27,8 +27,9 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-API_PROVIDER = os.getenv("API_PROVIDER", "openai").lower()  # только openai (ChatAnywhere)
-MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-v3")
+# Используем gpt-4o-mini (поддерживается ChatAnywhere)
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
+API_PROVIDER = "openai"  # всегда через ChatAnywhere
 
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
@@ -55,7 +56,7 @@ POST_FORMATS = {
 PROVIDER_CONFIG = {
     "openai": {
         "url": "https://api.chatanywhere.tech/v1/chat/completions",
-        "default_model": "deepseek-v3",
+        "default_model": "gpt-4o-mini",
         "headers": lambda key: {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
     }
 }
@@ -128,15 +129,15 @@ def init_db():
             "Ты — автор канала «Скептик с EBITDA».\n"
             "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
             "НЕ выводи <think>, рассуждения — только готовый пост.\n"
-            "Используй ТОЛЬКО свежие новости (за последние 2–3 месяца).\n"
-            "Пост должен быть КОРОТКИМ: максимум 400 символов (3–4 абзаца).\n"
+            "ВАЖНО: Используй ТОЛЬКО данные за 2025–2026 годы. Если у тебя нет точных цифр за этот период, НЕ выдумывай их – напиши, что данные отсутствуют, и предложи гипотетический сценарий на основе трендов.\n"
+            "Пост должен быть КОРОТКИМ: максимум 280 символов (2–3 абзаца).\n"
             "Структура поста (ОБЯЗАТЕЛЬНО):\n"
             "1. Заголовок с эмодзи (например, 🚨).\n"
             "2. Каждый новый смысловой блок начинай с эмодзи (📉, 🏬, 💰, ⚠️).\n"
             "3. Ставь двойной перенос между абзацами.\n"
             "4. Ключевые цифры выделяй жирным через HTML-тег <b>...</b> (НЕ используй **).\n"
             "5. В конце — Action Item с ✅ (отдельно).\n"
-            "6. После Action Item — источник и хештеги (#тег1 #тег2).\n"
+            "6. После Action Item — источник (если неизвестен, укажи 'по данным открытых источников') и хештеги (#тег1 #тег2).\n"
             "7. Не используй разделители вроде '---'.\n"
             "После текста === и описание картинки (англ., 3–4 слова)."
         )
@@ -193,15 +194,15 @@ def init_db():
                 "Ты — автор канала «Скептик с EBITDA».\n"
                 "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
                 "НЕ выводи <think>, рассуждения — только готовый пост.\n"
-                "Используй ТОЛЬКО свежие новости (за последние 2–3 месяца).\n"
-                "Пост должен быть КОРОТКИМ: максимум 400 символов (3–4 абзаца).\n"
+                "ВАЖНО: Используй ТОЛЬКО данные за 2025–2026 годы. Если у тебя нет точных цифр за этот период, НЕ выдумывай их – напиши, что данные отсутствуют, и предложи гипотетический сценарий на основе трендов.\n"
+                "Пост должен быть КОРОТКИМ: максимум 280 символов (2–3 абзаца).\n"
                 "Структура поста (ОБЯЗАТЕЛЬНО):\n"
                 "1. Заголовок с эмодзи (например, 🚨).\n"
                 "2. Каждый новый смысловой блок начинай с эмодзи (📉, 🏬, 💰, ⚠️).\n"
                 "3. Ставь двойной перенос между абзацами.\n"
                 "4. Ключевые цифры выделяй жирным через HTML-тег <b>...</b> (НЕ используй **).\n"
                 "5. В конце — Action Item с ✅ (отдельно).\n"
-                "6. После Action Item — источник и хештеги (#тег1 #тег2).\n"
+                "6. После Action Item — источник (если неизвестен, укажи 'по данным открытых источников') и хештеги (#тег1 #тег2).\n"
                 "7. Не используй разделители вроде '---'.\n"
                 "После текста === и описание картинки (англ., 3–4 слова)."
             )
@@ -250,23 +251,32 @@ def set_prompt(content):
     else:
         execute_query('REPLACE INTO prompts (name, content) VALUES (?, ?)', ('system_prompt', content))
 
-# ======================== RSS И АНАЛИТИКА =========================
+# ======================== ПОЛУЧЕНИЕ АКТУАЛЬНОЙ ТЕМЫ =========================
 def get_topic_from_news():
     rss_urls = [
         "https://www.rbc.ru/rss/",
         "https://www.kommersant.ru/RSS/news.xml",
         "https://lenta.ru/rss/news",
-        "https://www.vedomosti.ru/rss/news"
+        "https://www.vedomosti.ru/rss/news",
+        "https://www.vedomosti.ru/rss/finance"
     ]
-    keywords = ["ozon", "wildberries", "магнит", "ритейл", "торговля", "нефть", "лукойл", "маркетплейс"]
+    keywords = ["ozon", "wildberries", "магнит", "ритейл", "торговля", "нефть", "лукойл", "маркетплейс", "выручка", "прибыль"]
     try:
         for url in rss_urls:
             feed = feedparser.parse(url)
-            for entry in feed.entries[:5]:
+            for entry in feed.entries[:8]:
                 title = entry.title.lower()
-                if any(kw in title for kw in keywords):
-                    summary = entry.summary if hasattr(entry, 'summary') else ""
-                    return f"{entry.title}. {summary[:100]}"
+                summary = entry.summary.lower() if hasattr(entry, 'summary') else ""
+                if any(kw in title or kw in summary for kw in keywords):
+                    published = entry.get('published', '')
+                    if published:
+                        try:
+                            pub_date = datetime.strptime(published[:25], '%a, %d %b %Y %H:%M:%S %Z') if 'GMT' in published else None
+                            if pub_date and pub_date < datetime.now() - timedelta(days=30):
+                                continue
+                        except:
+                            pass
+                    return f"{entry.title}. {summary[:150]}"
         return DAY_TOPICS.get(datetime.now().weekday(), DAY_TOPICS[0])
     except Exception as e:
         print(f"[WARN] Ошибка RSS: {e}")
@@ -289,9 +299,7 @@ def get_topic_by_analytics():
         views = row['views'] or 0
         reactions = row['reactions'] or 0
         score = rating + views * 0.1 + reactions * 0.5
-        if topic not in topic_stats:
-            topic_stats[topic] = 0
-        topic_stats[topic] += score
+        topic_stats[topic] = topic_stats.get(topic, 0) + score
 
     if not topic_stats:
         return get_topic_from_news()
@@ -385,6 +393,16 @@ def clean_text(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
+def shorten_text(text, max_len=280):
+    if len(text) <= max_len:
+        return text
+    truncated = text[:max_len]
+    last_space = truncated.rfind(' ')
+    if last_space > 0:
+        return truncated[:last_space] + "..."
+    else:
+        return truncated + "..."
+
 def beautify_post(text):
     if not text:
         return ""
@@ -468,10 +486,16 @@ def split_into_parts(text, max_len=1000):
     return result_parts if result_parts else [text[:max_len] + "..."]
 
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
-def generate_post():
-    topic = get_topic_by_analytics()
+def generate_post(custom_topic=None):
+    if custom_topic:
+        topic = custom_topic
+        print(f"[DEBUG] Использую ручную тему: {topic}")
+    else:
+        topic = get_topic_by_analytics()
+        print(f"[DEBUG] Выбрана тема по аналитике: {topic}")
+
     format_type = POST_FORMATS.get(datetime.now().weekday(), "новость")
-    print(f"[DEBUG] Выбрана тема: {topic}, формат: {format_type}")
+    print(f"[DEBUG] Формат: {format_type}")
 
     system_prompt = get_prompt()
     if not system_prompt:
@@ -479,26 +503,26 @@ def generate_post():
             "Ты — автор канала «Скептик с EBITDA».\n"
             "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
             "НЕ выводи <think>, рассуждения — только готовый пост.\n"
-            "Используй ТОЛЬКО свежие новости (за последние 2–3 месяца).\n"
-            "Пост должен быть КОРОТКИМ: максимум 400 символов (3–4 абзаца).\n"
+            "ВАЖНО: Используй ТОЛЬКО данные за 2025–2026 годы. Если у тебя нет точных цифр за этот период, НЕ выдумывай их – напиши, что данные отсутствуют, и предложи гипотетический сценарий на основе трендов.\n"
+            "Пост должен быть КОРОТКИМ: максимум 280 символов (2–3 абзаца).\n"
             "Структура поста (ОБЯЗАТЕЛЬНО):\n"
             "1. Заголовок с эмодзи (например, 🚨).\n"
             "2. Каждый новый смысловой блок начинай с эмодзи (📉, 🏬, 💰, ⚠️).\n"
             "3. Ставь двойной перенос между абзацами.\n"
             "4. Ключевые цифры выделяй жирным через HTML-тег <b>...</b> (НЕ используй **).\n"
             "5. В конце — Action Item с ✅ (отдельно).\n"
-            "6. После Action Item — источник и хештеги (#тег1 #тег2).\n"
+            "6. После Action Item — источник (если неизвестен, укажи 'по данным открытых источников') и хештеги (#тег1 #тег2).\n"
             "7. Не используй разделители вроде '---'.\n"
             "После текста === и описание картинки (англ., 3–4 слова)."
         )
 
     format_style = {
-        "мем": "Сделай пост с юмором, сарказмом, коротко (до 300 символов).",
-        "новость": "Информативный пост с фактами и датами.",
-        "аналитика": "Глубокий разбор цифр и трендов, но кратко."
+        "мем": "Сделай пост с юмором, сарказмом, коротко (до 280 символов).",
+        "новость": "Информативный пост с фактами и датами (до 280 символов).",
+        "аналитика": "Глубокий разбор цифр и трендов, но кратко (до 280 символов)."
     }.get(format_type, "")
 
-    user_prompt = f"Напиши пост на тему: {topic}. {format_style} Используй реальные цифры из отчётов."
+    user_prompt = f"Напиши пост на тему: {topic}. {format_style} Используй реальные цифры из отчётов (только 2025–2026 годов)."
 
     headers = API_HEADERS_FUNC(DEEPSEEK_API_KEY)
     payload = {
@@ -508,7 +532,7 @@ def generate_post():
             {"role": "user", "content": user_prompt}
         ],
         "temperature": 0.85,
-        "max_tokens": 400
+        "max_tokens": 250
     }
 
     try:
@@ -526,8 +550,7 @@ def generate_post():
         full_text = "📊 Скептик с EBITDA: аналитика ритейла.\n\n⚠️ К сожалению, API временно недоступен. Попробуйте позже.\n\n✅ Следите за обновлениями!"
 
     full_text = clean_text(full_text)
-    if not full_text.endswith(('.', '?', '!', '"', ')')):
-        full_text += "..."
+    full_text = shorten_text(full_text, max_len=280)
 
     if "===" in full_text:
         parts = full_text.split("===", 1)
@@ -861,6 +884,20 @@ def handle_admin_command(text, chat_id):
         send_admin_menu(chat_id)
         return
 
+    if text.startswith('/generate'):
+        parts = text.split(' ', 1)
+        if len(parts) > 1:
+            custom_topic = parts[1]
+            send_message(chat_id, f"🔄 Генерирую пост на тему: {custom_topic}...")
+            threading.Thread(target=lambda: job(auto_publish=False, custom_topic=custom_topic), daemon=True).start()
+            send_admin_menu(chat_id)
+            return
+        else:
+            send_message(chat_id, "🔄 Запускаю генерацию...")
+            threading.Thread(target=lambda: job(auto_publish=False), daemon=True).start()
+            send_admin_menu(chat_id)
+            return
+
     if text.startswith('/stats'):
         rows = execute_query(
             'SELECT COUNT(*) as total, SUM(CASE WHEN status=\'published\' THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status=\'rejected\' THEN 1 ELSE 0 END) as rejected FROM posts',
@@ -874,12 +911,6 @@ def handle_admin_command(text, chat_id):
     if text.startswith('/backup'):
         backup_db()
         send_message(chat_id, "✅ Бэкап создан")
-        send_admin_menu(chat_id)
-        return
-
-    if text.startswith('/generate'):
-        send_message(chat_id, "🔄 Запускаю генерацию...")
-        threading.Thread(target=lambda: job(auto_publish=False), daemon=True).start()
         send_admin_menu(chat_id)
         return
 
@@ -1063,14 +1094,14 @@ def weekly_report():
         msg += f"\n💡 Лучшее время для публикации: {best_hour}:00 МСК."
     send_message(ADMIN_CHAT_ID, msg)
 
-def job(auto_publish=False):
+def job(auto_publish=False, custom_topic=None):
     print(f"[DEBUG] job started at {datetime.now()}")
     send_message(ADMIN_CHAT_ID, f"🔄 Генерация поста начата в {datetime.now().strftime('%H:%M:%S')}")
     check_and_repost()
     print(f"[DEBUG] check_and_repost done")
     print(f"[{datetime.now()}] Генерация поста...")
     try:
-        post_text, image_prompt, topic, format_type = generate_post()
+        post_text, image_prompt, topic, format_type = generate_post(custom_topic=custom_topic)
         print(f"[DEBUG] post_text получен, длина {len(post_text)}")
         image_path = generate_image(image_prompt)
         print(f"[DEBUG] image_path = {image_path}")
@@ -1174,6 +1205,7 @@ print("Бот запущен. Ожидание расписания...")
 print(f"Провайдер: {API_PROVIDER}, Модель: {MODEL_NAME}")
 print("Модерация каждый день в 18:00 МСК, публикация в 10:00 МСК.")
 print("Для админа доступно меню по команде /start или /help")
+print("Ручная генерация: /generate [тема]")
 
 while True:
     schedule.run_pending()
