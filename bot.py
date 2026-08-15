@@ -473,15 +473,19 @@ def split_into_parts(text, max_len=1000):
         result_parts.append(current_part)
     return result_parts if result_parts else [text[:max_len] + "..."]
 
-# ======================== ПОИСК КАРТИНКИ НА UNSPLASH =========================
+# ======================== ПОИСК КАРТИНКИ НА UNSPLASH (ОБНОВЛЁННАЯ) =========================
 def search_image_unsplash(query):
     if not UNSPLASH_ACCESS_KEY:
         print("[WARN] UNSPLASH_ACCESS_KEY не задан, возвращаем None")
         return None
     try:
+        # Добавляем случайное слово для разнообразия
+        extra_words = ["market", "finance", "business", "store", "shopping", "graph", "chart", "analysis", "retail", "ecommerce", "warehouse", "delivery", "customer", "product", "sale"]
+        word = random.choice(extra_words)
+        search_query = f"{query} {word}"
         url = "https://api.unsplash.com/search/photos"
         params = {
-            "query": query,
+            "query": search_query,
             "per_page": 1,
             "orientation": "landscape"
         }
@@ -509,6 +513,102 @@ def search_image_unsplash(query):
     except Exception as e:
         print(f"[ERROR] Ошибка при запросе к Unsplash: {e}")
         return None
+
+# ======================== ГЕНЕРАЦИЯ КАРТИНКИ (ОБНОВЛЁННАЯ) =========================
+def generate_image(prompt):
+    # Добавляем случайные модификаторы для уникальности
+    modifiers = [
+        "vibrant", "muted", "dark", "bright", "minimalist", "detailed",
+        "sketch", "3d", "abstract", "realistic", "cartoon", "watercolor",
+        "oil painting", "digital art", "graffiti", "neon", "retro",
+        "modern", "futuristic", "vintage", "cinematic", "photographic",
+        "dramatic lighting", "soft lighting", "high contrast"
+    ]
+    styles = [
+        "by Banksy", "by Picasso", "by Warhol", "by Basquiat", "by Hokusai",
+        "in the style of Tim Burton", "in the style of Studio Ghibli",
+        "in the style of cyberpunk", "in the style of steampunk",
+        "in the style of Salvador Dali", "in the style of Van Gogh"
+    ]
+    colors = ["blue", "red", "green", "yellow", "purple", "orange", "pink", "teal", "monochrome", "pastel", "neon"]
+
+    # Случайный выбор
+    rand_mods = random.sample(modifiers, k=3)
+    rand_style = random.choice(styles) if random.random() > 0.3 else ""
+    rand_color = random.choice(colors)
+    # Собираем новый промпт
+    new_prompt = f"{prompt}, {rand_color} color scheme, {', '.join(rand_mods)}"
+    if rand_style:
+        new_prompt += f", {rand_style}"
+    # Добавляем случайное число для надёжности
+    new_prompt += f" {random.randint(1, 999999)}"
+
+    # Сначала пытаемся через Unsplash (если есть ключ)
+    if UNSPLASH_ACCESS_KEY:
+        # Для Unsplash используем только ключевые слова без стилей
+        clean_prompt = re.sub(r'[,.:;!?]', '', prompt)
+        keywords = clean_prompt[:100].strip()
+        img_path = search_image_unsplash(keywords)
+        if img_path:
+            return img_path
+
+    # Резерв – Pollinations с новым промптом
+    print("[WARN] Использую резервную генерацию через Pollinations")
+    if len(new_prompt) > 200:
+        new_prompt = new_prompt[:200]
+    for attempt in range(3):
+        try:
+            unique = f" {random.randint(1, 100000)}"
+            full_prompt = new_prompt + unique
+            encoded = urllib.parse.quote(full_prompt)
+            seed = random.randint(1, 999999)
+            ts = int(time.time())
+            url = f"https://image.pollinations.ai/prompt/{encoded}?width=1200&height=800&seed={seed}&t={ts}"
+            print(f"[DEBUG] Pollinations URL (попытка {attempt+1}): {url}")
+            resp = requests.get(url, timeout=90)
+            if resp.status_code == 200:
+                content = resp.content
+                if len(content) < 1000:
+                    print(f"[WARN] Слишком маленький файл ({len(content)} байт), повтор")
+                    time.sleep(2)
+                    continue
+                with open("temp_image.jpg", "wb") as f:
+                    f.write(content)
+                try:
+                    img = Image.open("temp_image.jpg")
+                    if img.width < 50 or img.height < 50:
+                        raise Exception("Слишком маленькое")
+                    img = img.convert('L')
+                    pixels = list(img.getdata())
+                    avg = sum(pixels) / len(pixels)
+                    if avg < 30:
+                        print("[WARN] Обнаружено чёрное изображение, пробуем с упрощённым промптом")
+                        os.remove("temp_image.jpg")
+                        # Упрощаем и пробуем снова
+                        new_prompt = "business illustration, finance, colorful, abstract"
+                        continue
+                except:
+                    pass
+                return "temp_image.jpg"
+            else:
+                print(f"[WARN] Pollinations вернул {resp.status_code}, попытка {attempt+1}")
+        except Exception as e:
+            print(f"[WARN] Ошибка Pollinations (попытка {attempt+1}): {e}")
+        time.sleep(3)
+
+    # Последняя попытка с минимальным промптом
+    try:
+        print("[DEBUG] Последняя попытка с минимальным промптом")
+        url = f"https://image.pollinations.ai/prompt/business%20illustration%20finance%20chart?width=1200&height=800&seed={random.randint(1,999999)}&t={int(time.time())}"
+        resp = requests.get(url, timeout=90)
+        if resp.status_code == 200 and len(resp.content) > 1000:
+            with open("temp_image.jpg", "wb") as f:
+                f.write(resp.content)
+            return "temp_image.jpg"
+    except:
+        pass
+    print("[ERROR] Все попытки генерации картинки провалились")
+    return None
 
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post(custom_topic=None):
@@ -593,69 +693,6 @@ def generate_post(custom_topic=None):
 
     post_text = beautify_post(post_text)
     return post_text, image_prompt, topic, format_type
-
-# ======================== ГЕНЕРАЦИЯ КАРТИНКИ =========================
-def generate_image(prompt):
-    if UNSPLASH_ACCESS_KEY:
-        keywords = re.sub(r'[^\w\s]', '', prompt)
-        keywords = keywords[:100]
-        img_path = search_image_unsplash(keywords)
-        if img_path:
-            return img_path
-
-    print("[WARN] Использую резервную генерацию через Pollinations")
-    if len(prompt) > 200:
-        prompt = prompt[:200]
-    for attempt in range(3):
-        try:
-            unique = f" {random.randint(1, 100000)}"
-            full_prompt = prompt + unique
-            encoded = urllib.parse.quote(full_prompt)
-            seed = random.randint(1, 999999)
-            ts = int(time.time())
-            url = f"https://image.pollinations.ai/prompt/{encoded}?width=1200&height=800&seed={seed}&t={ts}"
-            print(f"[DEBUG] Pollinations URL (попытка {attempt+1}): {url}")
-            resp = requests.get(url, timeout=90)
-            if resp.status_code == 200:
-                content = resp.content
-                if len(content) < 1000:
-                    print(f"[WARN] Слишком маленький файл ({len(content)} байт), повтор")
-                    time.sleep(2)
-                    continue
-                with open("temp_image.jpg", "wb") as f:
-                    f.write(content)
-                try:
-                    img = Image.open("temp_image.jpg")
-                    if img.width < 50 or img.height < 50:
-                        raise Exception("Слишком маленькое")
-                    img = img.convert('L')
-                    pixels = list(img.getdata())
-                    avg = sum(pixels) / len(pixels)
-                    if avg < 30:
-                        print("[WARN] Обнаружено чёрное изображение, пробуем с упрощённым промптом")
-                        os.remove("temp_image.jpg")
-                        prompt = "business illustration, financial data, modern, colorful"
-                        continue
-                except:
-                    pass
-                return "temp_image.jpg"
-            else:
-                print(f"[WARN] Pollinations вернул {resp.status_code}, попытка {attempt+1}")
-        except Exception as e:
-            print(f"[WARN] Ошибка Pollinations (попытка {attempt+1}): {e}")
-        time.sleep(3)
-    try:
-        print("[DEBUG] Последняя попытка с минимальным промптом")
-        url = f"https://image.pollinations.ai/prompt/business%20illustration%20finance%20chart?width=1200&height=800&seed={random.randint(1,999999)}&t={int(time.time())}"
-        resp = requests.get(url, timeout=90)
-        if resp.status_code == 200 and len(resp.content) > 1000:
-            with open("temp_image.jpg", "wb") as f:
-                f.write(resp.content)
-            return "temp_image.jpg"
-    except:
-        pass
-    print("[ERROR] Все попытки генерации картинки провалились")
-    return None
 
 # ======================== ПУБЛИКАЦИЯ =========================
 def publish_text_only(text):
