@@ -395,7 +395,7 @@ def beautify_post(text):
     if not text:
         return ""
     text = re.sub(r'\s+', ' ', text).strip()
-    text = re.sub(r'\*\*', '', text)  # убираем Markdown звёздочки
+    text = re.sub(r'\*\*', '', text)
 
     action_text = ""
     match = re.search(r'(✅.*?)(?=\s*[A-Z#]|$)', text, re.DOTALL)
@@ -493,7 +493,6 @@ def search_image_unsplash(query):
         if resp.status_code == 200:
             data = resp.json()
             if data.get("results") and len(data["results"]) > 0:
-                # Выбираем фото с максимальным разрешением
                 best = None
                 best_width = 0
                 for img in data["results"]:
@@ -552,7 +551,7 @@ def generate_image(prompt):
         if img_path:
             return img_path
 
-    # 2. Pollinations с улучшенным промптом
+    # 2. Pollinations с улучшенным промптом (без Pexels)
     print("[WARN] Использую резервную генерацию через Pollinations")
     enhanced_prompt = f"{prompt}, high quality, sharp, 4k, detailed, professional, clean"
     if len(enhanced_prompt) > 200:
@@ -953,7 +952,6 @@ def handle_admin_command(text, chat_id):
             return
 
     if text.startswith('/stats'):
-        # Расширенная статистика для админа (можно оставить как есть)
         rows = execute_query(
             'SELECT COUNT(*) as total, SUM(CASE WHEN status=\'published\' THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status=\'rejected\' THEN 1 ELSE 0 END) as rejected FROM posts',
             fetchone=True
@@ -1017,7 +1015,6 @@ def handle_admin_command(text, chat_id):
 
 # ======================== ОБНОВЛЕНИЕ СТАТИСТИКИ ДЛЯ ОТЧЁТА =========================
 def update_post_stats():
-    """Обновляет просмотры и реакции для постов за последнюю неделю"""
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
         'SELECT id, session_id, message_id FROM posts WHERE status = \'published\' AND published_at >= ? AND message_id IS NOT NULL',
@@ -1038,31 +1035,26 @@ def update_post_stats():
                         'UPDATE posts SET views = ?, reactions = ? WHERE id = ?',
                         (views, reactions, row['id'])
                     )
-                    # также записываем в publish_times
                     record_publish_time(row['id'], views, reactions)
-            time.sleep(0.5)  # небольшая задержка, чтобы не перегружать API
+            time.sleep(0.5)
         except Exception as e:
             print(f"[ERROR] Ошибка обновления статистики для поста {row['session_id']}: {e}")
 
 # ======================== РАСШИРЕННЫЙ ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ =========================
 def weekly_report():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
-    # Базовая статистика
     stats = execute_query(
         'SELECT COUNT(*) as total, SUM(CASE WHEN status=\'published\' THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status=\'rejected\' THEN 1 ELSE 0 END) as rejected FROM posts WHERE created_at >= ?',
         (week_ago,), fetchone=True
     )
-    # Просмотры и реакции
     views_reactions = execute_query(
         'SELECT SUM(views) as total_views, SUM(reactions) as total_reactions, AVG(views) as avg_views FROM posts WHERE status = \'published\' AND published_at >= ? AND views > 0',
         (week_ago,), fetchone=True
     )
-    # Самый просматриваемый пост
     top_post = execute_query(
         'SELECT text, views, reactions FROM posts WHERE status = \'published\' AND published_at >= ? ORDER BY views DESC LIMIT 1',
         (week_ago,), fetchone=True
     )
-    # Топ-5 по просмотрам
     top5 = execute_query(
         'SELECT text, views, reactions FROM posts WHERE status = \'published\' AND published_at >= ? ORDER BY views DESC LIMIT 5',
         (week_ago,), fetch=True
@@ -1096,7 +1088,6 @@ def weekly_report():
     else:
         msg += "Нет данных для топа.\n"
 
-    # Рекомендация времени
     best_hour = analyze_best_time()
     if best_hour is not None:
         msg += f"\n💡 **Лучшее время для публикации:** {best_hour}:00 МСК (на основе статистики)."
@@ -1171,7 +1162,6 @@ def digest_job():
         views = row['views'] or 0
         reactions = row['reactions'] or 0
         if row['message_id'] and (views == 0 and reactions == 0):
-            # Попробуем обновить статистику для этого поста
             try:
                 resp = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMessageStatistics", params={"chat_id": TELEGRAM_CHAT_ID, "message_id": row['message_id']}, timeout=10)
                 if resp.status_code == 200:
@@ -1298,9 +1288,9 @@ threading.Thread(target=poll_updates, daemon=True).start()
 schedule.every().day.at("15:00").do(lambda: job(auto_publish=False))
 schedule.every().day.at("07:00").do(publish_scheduled_posts)
 schedule.every().sunday.at("17:00").do(weekly_report)
-schedule.every().sunday.at("17:00").do(digest_job)  # публичный дайджест
+schedule.every().sunday.at("17:00").do(digest_job)
 schedule.every().day.at("03:00").do(backup_db)
-schedule.every().day.at("02:00").do(update_post_stats)  # обновление статистики для отчёта
+schedule.every().day.at("02:00").do(update_post_stats)
 
 print("Бот запущен. Ожидание расписания...")
 print(f"Провайдер: {API_PROVIDER}, Модель: {MODEL_NAME}")
