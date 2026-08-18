@@ -68,87 +68,36 @@ API_DEFAULT_MODEL = config["default_model"]
 if not MODEL_NAME:
     MODEL_NAME = API_DEFAULT_MODEL
 
-# ======================== БАЗА ДАННЫХ =========================
-if DATABASE_URL:
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-    def get_db_connection():
-        return psycopg2.connect(DATABASE_URL, sslmode='require')
-    db_type = 'postgres'
-else:
-    DB_PATH = "posts.db"
-    db_type = 'sqlite'
+# ======================== БАЗА ДАННЫХ (С АВТО-FALLBACK) =========================
+db_type = None
+DB_PATH = "posts.db"
+pg_available = False
+
+def get_db_connection():
+    if db_type == 'postgres':
+        try:
+            import psycopg2
+            from psycopg2.extras import RealDictCursor
+            return psycopg2.connect(DATABASE_URL, sslmode='require')
+        except Exception as e:
+            print(f"[ERROR] PostgreSQL connection failed: {e}")
+            return None
+    else:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        return conn
 
 def init_db():
-    if db_type == 'postgres':
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS posts (
-                id SERIAL PRIMARY KEY,
-                session_id TEXT UNIQUE,
-                text TEXT,
-                image_path TEXT,
-                image_prompt TEXT,
-                topic TEXT,
-                status TEXT DEFAULT 'pending',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                approved_at TIMESTAMP,
-                scheduled_publish_time TIMESTAMP,
-                published_at TIMESTAMP,
-                edit_pending BOOLEAN DEFAULT FALSE,
-                rating INTEGER DEFAULT 0,
-                reposted BOOLEAN DEFAULT FALSE,
-                message_id BIGINT,
-                views INTEGER DEFAULT 0,
-                reactions INTEGER DEFAULT 0,
-                format TEXT DEFAULT 'новость'
-            )
-        ''')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON posts(session_id)')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_status ON posts(status)')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_scheduled_publish ON posts(scheduled_publish_time)')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_topic ON posts(topic)')
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS prompts (
-                name TEXT PRIMARY KEY,
-                content TEXT
-            )
-        ''')
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS publish_times (
-                id SERIAL PRIMARY KEY,
-                post_id INTEGER,
-                publish_hour INTEGER,
-                publish_weekday INTEGER,
-                views INTEGER,
-                reactions INTEGER
-            )
-        ''')
-        default_prompt = (
-            "Ты — автор канала «Скептик с EBITDA».\n"
-            "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
-            "ОБЯЗАТЕЛЬНО используй эмодзи в каждом абзаце (минимум 3–4 разных).\n"
-            "Начинай пост с заголовка с эмодзи, а каждый смысловой блок – с нового эмодзи.\n"
-            "Добавляй ёмкие, эмоциональные комментарии к цифрам, чтобы текст был живым и запоминающимся.\n"
-            "Структура: заголовок → факты с сарказмом → вывод → Action Item с ✅.\n"
-            "Не используй шаблонные фразы – будь оригинальным.\n"
-            "Используй ТОЛЬКО данные за 2025–2026 годы.\n"
-            "Пост должен быть примерно 600–900 символов (6–8 предложений). ОБЯЗАТЕЛЬНО заканчивай точкой, восклицанием или вопросом.\n"
-            "Ключевые цифры выделяй жирным через HTML-тег <b>...</b> (НЕ используй **).\n"
-            "После Action Item — источник (если неизвестен, укажи 'по данным открытых источников') и хештеги (#тег1 #тег2).\n"
-            "Не используй разделители вроде '---'.\n"
-            "После текста === и описание картинки (англ., 3–4 слова)."
-        )
-        cur.execute('INSERT INTO prompts (name, content) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING', ('system_prompt', default_prompt))
-        conn.commit()
-        cur.close()
-        conn.close()
-    else:
-        with closing(sqlite3.connect(DB_PATH)) as conn:
-            conn.execute('''
+    global db_type, pg_available
+    if DATABASE_URL:
+        try:
+            import psycopg2
+            from psycopg2.extras import RealDictCursor
+            conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+            cur = conn.cursor()
+            cur.execute('''
                 CREATE TABLE IF NOT EXISTS posts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     session_id TEXT UNIQUE,
                     text TEXT,
                     image_path TEXT,
@@ -159,37 +108,36 @@ def init_db():
                     approved_at TIMESTAMP,
                     scheduled_publish_time TIMESTAMP,
                     published_at TIMESTAMP,
-                    edit_pending INTEGER DEFAULT 0,
+                    edit_pending BOOLEAN DEFAULT FALSE,
                     rating INTEGER DEFAULT 0,
-                    reposted INTEGER DEFAULT 0,
-                    message_id INTEGER,
+                    reposted BOOLEAN DEFAULT FALSE,
+                    message_id BIGINT,
                     views INTEGER DEFAULT 0,
                     reactions INTEGER DEFAULT 0,
                     format TEXT DEFAULT 'новость'
                 )
             ''')
-            conn.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON posts(session_id)')
-            conn.execute('CREATE INDEX IF NOT EXISTS idx_status ON posts(status)')
-            conn.execute('CREATE INDEX IF NOT EXISTS idx_scheduled_publish ON posts(scheduled_publish_time)')
-            conn.execute('CREATE INDEX IF NOT EXISTS idx_topic ON posts(topic)')
-            conn.execute('''
+            cur.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON posts(session_id)')
+            cur.execute('CREATE INDEX IF NOT EXISTS idx_status ON posts(status)')
+            cur.execute('CREATE INDEX IF NOT EXISTS idx_scheduled_publish ON posts(scheduled_publish_time)')
+            cur.execute('CREATE INDEX IF NOT EXISTS idx_topic ON posts(topic)')
+            cur.execute('''
                 CREATE TABLE IF NOT EXISTS prompts (
                     name TEXT PRIMARY KEY,
                     content TEXT
                 )
             ''')
-            conn.execute('''
+            cur.execute('''
                 CREATE TABLE IF NOT EXISTS publish_times (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     post_id INTEGER,
                     publish_hour INTEGER,
                     publish_weekday INTEGER,
                     views INTEGER,
-                    reactions INTEGER,
-                    FOREIGN KEY(post_id) REFERENCES posts(id)
+                    reactions INTEGER
                 )
             ''')
-            default_prompt_sqlite = (
+            default_prompt = (
                 "Ты — автор канала «Скептик с EBITDA».\n"
                 "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
                 "ОБЯЗАТЕЛЬНО используй эмодзи в каждом абзаце (минимум 3–4 разных).\n"
@@ -204,14 +152,93 @@ def init_db():
                 "Не используй разделители вроде '---'.\n"
                 "После текста === и описание картинки (англ., 3–4 слова)."
             )
-            conn.execute('INSERT OR IGNORE INTO prompts (name, content) VALUES (?, ?)', ('system_prompt', default_prompt_sqlite))
+            cur.execute('INSERT INTO prompts (name, content) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING', ('system_prompt', default_prompt))
             conn.commit()
+            cur.close()
+            conn.close()
+            db_type = 'postgres'
+            pg_available = True
+            print("[INFO] Подключение к PostgreSQL успешно.")
+            return
+        except Exception as e:
+            print(f"[WARN] Ошибка PostgreSQL: {e}. Переключаюсь на SQLite.")
+            db_type = None
+            pg_available = False
+    # Fallback to SQLite
+    db_type = 'sqlite'
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS posts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT UNIQUE,
+                text TEXT,
+                image_path TEXT,
+                image_prompt TEXT,
+                topic TEXT,
+                status TEXT DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                approved_at TIMESTAMP,
+                scheduled_publish_time TIMESTAMP,
+                published_at TIMESTAMP,
+                edit_pending INTEGER DEFAULT 0,
+                rating INTEGER DEFAULT 0,
+                reposted INTEGER DEFAULT 0,
+                message_id INTEGER,
+                views INTEGER DEFAULT 0,
+                reactions INTEGER DEFAULT 0,
+                format TEXT DEFAULT 'новость'
+            )
+        ''')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON posts(session_id)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_status ON posts(status)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_scheduled_publish ON posts(scheduled_publish_time)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_topic ON posts(topic)')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS prompts (
+                name TEXT PRIMARY KEY,
+                content TEXT
+            )
+        ''')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS publish_times (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                post_id INTEGER,
+                publish_hour INTEGER,
+                publish_weekday INTEGER,
+                views INTEGER,
+                reactions INTEGER,
+                FOREIGN KEY(post_id) REFERENCES posts(id)
+            )
+        ''')
+        default_prompt_sqlite = (
+            "Ты — автор канала «Скептик с EBITDA».\n"
+            "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
+            "ОБЯЗАТЕЛЬНО используй эмодзи в каждом абзаце (минимум 3–4 разных).\n"
+            "Начинай пост с заголовка с эмодзи, а каждый смысловой блок – с нового эмодзи.\n"
+            "Добавляй ёмкие, эмоциональные комментарии к цифрам, чтобы текст был живым и запоминающимся.\n"
+            "Структура: заголовок → факты с сарказмом → вывод → Action Item с ✅.\n"
+            "Не используй шаблонные фразы – будь оригинальным.\n"
+            "Используй ТОЛЬКО данные за 2025–2026 годы.\n"
+            "Пост должен быть примерно 600–900 символов (6–8 предложений). ОБЯЗАТЕЛЬНО заканчивай точкой, восклицанием или вопросом.\n"
+            "Ключевые цифры выделяй жирным через HTML-тег <b>...</b> (НЕ используй **).\n"
+            "После Action Item — источник (если неизвестен, укажи 'по данным открытых источников') и хештеги (#тег1 #тег2).\n"
+            "Не используй разделители вроде '---'.\n"
+            "После текста === и описание картинки (англ., 3–4 слова)."
+        )
+        conn.execute('INSERT OR IGNORE INTO prompts (name, content) VALUES (?, ?)', ('system_prompt', default_prompt_sqlite))
+        conn.commit()
+    print("[INFO] Используется SQLite.")
+
 init_db()
 
 def execute_query(query, params=None, fetch=False, fetchone=False):
     if db_type == 'postgres':
         query = query.replace('?', '%s')
         conn = get_db_connection()
+        if conn is None:
+            # fallback to SQLite
+            return execute_query_sqlite(query, params, fetch, fetchone)
+        from psycopg2.extras import RealDictCursor
         cur = conn.cursor(cursor_factory=RealDictCursor if fetch or fetchone else None)
         cur.execute(query, params or ())
         if fetch:
@@ -225,19 +252,22 @@ def execute_query(query, params=None, fetch=False, fetchone=False):
         conn.close()
         return result
     else:
-        with closing(sqlite3.connect(DB_PATH)) as conn:
-            conn.row_factory = sqlite3.Row
-            cur = conn.cursor()
-            cur.execute(query, params or ())
-            if fetch:
-                result = [dict(row) for row in cur.fetchall()]
-            elif fetchone:
-                row = cur.fetchone()
-                result = dict(row) if row else None
-            else:
-                result = None
-            conn.commit()
-            return result
+        return execute_query_sqlite(query, params, fetch, fetchone)
+
+def execute_query_sqlite(query, params=None, fetch=False, fetchone=False):
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(query, params or ())
+        if fetch:
+            result = [dict(row) for row in cur.fetchall()]
+        elif fetchone:
+            row = cur.fetchone()
+            result = dict(row) if row else None
+        else:
+            result = None
+        conn.commit()
+        return result
 
 def get_prompt():
     row = execute_query('SELECT content FROM prompts WHERE name = ?', ('system_prompt',), fetchone=True)
@@ -308,19 +338,19 @@ def get_topic_by_analytics():
 
 # ======================== БЭКАП =========================
 def backup_db():
-    try:
-        if not os.path.exists("backups"):
-            os.makedirs("backups")
-        if db_type == 'sqlite':
+    if db_type == 'sqlite':
+        try:
+            if not os.path.exists("backups"):
+                os.makedirs("backups")
             src = DB_PATH
             if os.path.exists(src):
                 dst = f"backups/posts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
                 shutil.copyfile(src, dst)
                 print(f"[INFO] Бэкап создан: {dst}")
-        else:
-            print("[INFO] Бэкап PostgreSQL не реализован, используйте встроенные средства Render")
-    except Exception as e:
-        print(f"[ERROR] Ошибка бэкапа: {e}")
+        except Exception as e:
+            print(f"[ERROR] Ошибка бэкапа: {e}")
+    else:
+        print("[INFO] Бэкап PostgreSQL не реализован, используйте встроенные средства Render")
 
 # ======================== ФУНКЦИИ ПОСТОВ =========================
 def save_post(session_id, text, image_path, image_prompt, topic, format_type):
@@ -521,10 +551,7 @@ def search_image_unsplash(query):
         print(f"[ERROR] Ошибка при запросе к Unsplash: {e}")
         return None
 
-# ======================== ГЕНЕРАЦИЯ КАРТИНКИ С ИНФОГРАФИКОЙ =========================
-
-# ... (весь код до generate_image такой же, как в предыдущей версии, но без create_infographic)
-
+# ======================== ГЕНЕРАЦИЯ КАРТИНКИ (БЕЗ ИНФОГРАФИКИ) =========================
 def generate_image(prompt):
     # 1. Пытаемся через Unsplash
     if UNSPLASH_ACCESS_KEY:
@@ -532,7 +559,7 @@ def generate_image(prompt):
         if img_path:
             return img_path
 
-    # 2. Pollinations с улучшенным промптом (без инфографики)
+    # 2. Pollinations с улучшенным промптом
     print("[WARN] Использую резервную генерацию через Pollinations")
     enhanced_prompt = f"{prompt}, high quality, sharp, 4k, detailed, professional, clean"
     if len(enhanced_prompt) > 200:
@@ -562,6 +589,7 @@ def generate_image(prompt):
 
     print("[ERROR] Все попытки генерации картинки провалились")
     return None
+
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post(custom_topic=None):
     if custom_topic:
@@ -982,7 +1010,7 @@ def handle_admin_command(text, chat_id):
 
     send_admin_menu(chat_id)
 
-# ======================== ОБНОВЛЕНИЕ СТАТИСТИКИ ДЛЯ ОТЧЁТА =========================
+# ======================== ОБНОВЛЕНИЕ СТАТИСТИКИ =========================
 def update_post_stats():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     rows = execute_query(
@@ -1009,7 +1037,7 @@ def update_post_stats():
         except Exception as e:
             print(f"[ERROR] Ошибка обновления статистики для поста {row['session_id']}: {e}")
 
-# ======================== РАСШИРЕННЫЙ ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ =========================
+# ======================== РАСШИРЕННЫЙ ОТЧЁТ =========================
 def weekly_report():
     week_ago = (datetime.now() - timedelta(days=7)).isoformat()
     stats = execute_query(
@@ -1065,7 +1093,7 @@ def weekly_report():
 
     send_message(ADMIN_CHAT_ID, msg)
 
-# ======================== ОСТАЛЬНЫЙ КОД =========================
+# ======================== ОСТАЛЬНЫЕ ФУНКЦИИ =========================
 def check_and_repost():
     cutoff = (datetime.now() - timedelta(days=30)).isoformat()
     rows = execute_query(
