@@ -26,7 +26,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
-UNSPLASH_ACCESS_KEY = os.getenv("UNSPLASH_ACCESS_KEY")  # опционально
+UNSPLASH_ACCESS_KEY = os.getenv("UNSPLASH_ACCESS_KEY")
 
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
 API_PROVIDER = "openai"
@@ -473,20 +473,19 @@ def split_into_parts(text, max_len=1000):
         result_parts.append(current_part)
     return result_parts if result_parts else [text[:max_len] + "..."]
 
-# ======================== ПОИСК КАРТИНКИ НА UNSPLASH (ОБНОВЛЁННАЯ) =========================
+# ======================== ПОИСК КАРТИНКИ НА UNSPLASH =========================
 def search_image_unsplash(query):
     if not UNSPLASH_ACCESS_KEY:
         print("[WARN] UNSPLASH_ACCESS_KEY не задан, возвращаем None")
         return None
     try:
-        # Добавляем случайное слово для разнообразия
         extra_words = ["market", "finance", "business", "store", "shopping", "graph", "chart", "analysis", "retail", "ecommerce", "warehouse", "delivery", "customer", "product", "sale"]
         word = random.choice(extra_words)
         search_query = f"{query} {word}"
         url = "https://api.unsplash.com/search/photos"
         params = {
             "query": search_query,
-            "per_page": 1,
+            "per_page": 5,
             "orientation": "landscape"
         }
         headers = {"Authorization": f"Client-ID {UNSPLASH_ACCESS_KEY}"}
@@ -494,15 +493,24 @@ def search_image_unsplash(query):
         if resp.status_code == 200:
             data = resp.json()
             if data.get("results") and len(data["results"]) > 0:
-                image_url = data["results"][0]["urls"]["regular"]
+                # Выбираем фото с максимальным разрешением
+                best = None
+                best_width = 0
+                for img in data["results"]:
+                    if img["width"] >= 1200 and img["height"] >= 800 and img["width"] > best_width:
+                        best = img
+                        best_width = img["width"]
+                if not best:
+                    best = data["results"][0]
+                image_url = best["urls"]["regular"]
                 img_resp = requests.get(image_url, timeout=30)
                 if img_resp.status_code == 200:
                     with open("temp_image.jpg", "wb") as f:
                         f.write(img_resp.content)
                     try:
                         img = Image.open("temp_image.jpg")
-                        if img.width < 200 or img.height < 200:
-                            print("[WARN] Слишком маленькое изображение, пробуем следующее")
+                        if img.width < 800 or img.height < 600:
+                            print("[WARN] Слишком маленькое изображение, удаляем")
                             os.remove("temp_image.jpg")
                             return None
                     except:
@@ -514,52 +522,45 @@ def search_image_unsplash(query):
         print(f"[ERROR] Ошибка при запросе к Unsplash: {e}")
         return None
 
-# ======================== ГЕНЕРАЦИЯ КАРТИНКИ (ОБНОВЛЁННАЯ) =========================
+# ======================== ГЕНЕРАЦИЯ КАРТИНКИ С ИНФОГРАФИКОЙ =========================
+def create_infographic(text_data, title="Финансовый отчёт"):
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        img = Image.new('RGB', (1200, 800), color='white')
+        draw = ImageDraw.Draw(img)
+        try:
+            font_title = ImageFont.truetype("arial.ttf", 48)
+            font_text = ImageFont.truetype("arial.ttf", 32)
+        except:
+            font_title = ImageFont.load_default()
+            font_text = ImageFont.load_default()
+        draw.text((50, 50), title, fill='black', font=font_title)
+        y = 150
+        for key, value in text_data.items():
+            draw.text((50, y), f"{key}: {value}", fill='black', font=font_text)
+            y += 50
+        img.save("temp_image.jpg")
+        return "temp_image.jpg"
+    except Exception as e:
+        print(f"[ERROR] Инфографика не удалась: {e}")
+        return None
+
 def generate_image(prompt):
-    # Добавляем случайные модификаторы для уникальности
-    modifiers = [
-        "vibrant", "muted", "dark", "bright", "minimalist", "detailed",
-        "sketch", "3d", "abstract", "realistic", "cartoon", "watercolor",
-        "oil painting", "digital art", "graffiti", "neon", "retro",
-        "modern", "futuristic", "vintage", "cinematic", "photographic",
-        "dramatic lighting", "soft lighting", "high contrast"
-    ]
-    styles = [
-        "by Banksy", "by Picasso", "by Warhol", "by Basquiat", "by Hokusai",
-        "in the style of Tim Burton", "in the style of Studio Ghibli",
-        "in the style of cyberpunk", "in the style of steampunk",
-        "in the style of Salvador Dali", "in the style of Van Gogh"
-    ]
-    colors = ["blue", "red", "green", "yellow", "purple", "orange", "pink", "teal", "monochrome", "pastel", "neon"]
-
-    # Случайный выбор
-    rand_mods = random.sample(modifiers, k=3)
-    rand_style = random.choice(styles) if random.random() > 0.3 else ""
-    rand_color = random.choice(colors)
-    # Собираем новый промпт
-    new_prompt = f"{prompt}, {rand_color} color scheme, {', '.join(rand_mods)}"
-    if rand_style:
-        new_prompt += f", {rand_style}"
-    # Добавляем случайное число для надёжности
-    new_prompt += f" {random.randint(1, 999999)}"
-
-    # Сначала пытаемся через Unsplash (если есть ключ)
+    # 1. Пытаемся через Unsplash
     if UNSPLASH_ACCESS_KEY:
-        # Для Unsplash используем только ключевые слова без стилей
-        clean_prompt = re.sub(r'[,.:;!?]', '', prompt)
-        keywords = clean_prompt[:100].strip()
-        img_path = search_image_unsplash(keywords)
+        img_path = search_image_unsplash(prompt)
         if img_path:
             return img_path
 
-    # Резерв – Pollinations с новым промптом
+    # 2. Pollinations с улучшенным промптом
     print("[WARN] Использую резервную генерацию через Pollinations")
-    if len(new_prompt) > 200:
-        new_prompt = new_prompt[:200]
+    enhanced_prompt = f"{prompt}, high quality, sharp, 4k, detailed, professional, clean"
+    if len(enhanced_prompt) > 200:
+        enhanced_prompt = enhanced_prompt[:200]
     for attempt in range(3):
         try:
             unique = f" {random.randint(1, 100000)}"
-            full_prompt = new_prompt + unique
+            full_prompt = enhanced_prompt + unique
             encoded = urllib.parse.quote(full_prompt)
             seed = random.randint(1, 999999)
             ts = int(time.time())
@@ -569,44 +570,27 @@ def generate_image(prompt):
             if resp.status_code == 200:
                 content = resp.content
                 if len(content) < 1000:
-                    print(f"[WARN] Слишком маленький файл ({len(content)} байт), повтор")
+                    print(f"[WARN] Слишком маленький файл, повтор")
                     time.sleep(2)
                     continue
                 with open("temp_image.jpg", "wb") as f:
                     f.write(content)
-                try:
-                    img = Image.open("temp_image.jpg")
-                    if img.width < 50 or img.height < 50:
-                        raise Exception("Слишком маленькое")
-                    img = img.convert('L')
-                    pixels = list(img.getdata())
-                    avg = sum(pixels) / len(pixels)
-                    if avg < 30:
-                        print("[WARN] Обнаружено чёрное изображение, пробуем с упрощённым промптом")
-                        os.remove("temp_image.jpg")
-                        # Упрощаем и пробуем снова
-                        new_prompt = "business illustration, finance, colorful, abstract"
-                        continue
-                except:
-                    pass
                 return "temp_image.jpg"
-            else:
-                print(f"[WARN] Pollinations вернул {resp.status_code}, попытка {attempt+1}")
         except Exception as e:
-            print(f"[WARN] Ошибка Pollinations (попытка {attempt+1}): {e}")
+            print(f"[WARN] Pollinations ошибка: {e}")
         time.sleep(3)
 
-    # Последняя попытка с минимальным промптом
-    try:
-        print("[DEBUG] Последняя попытка с минимальным промптом")
-        url = f"https://image.pollinations.ai/prompt/business%20illustration%20finance%20chart?width=1200&height=800&seed={random.randint(1,999999)}&t={int(time.time())}"
-        resp = requests.get(url, timeout=90)
-        if resp.status_code == 200 and len(resp.content) > 1000:
-            with open("temp_image.jpg", "wb") as f:
-                f.write(resp.content)
-            return "temp_image.jpg"
-    except:
-        pass
+    # 3. Инфографика (всегда чётко)
+    print("[INFO] Все API не дали фото, создаю инфографику")
+    numbers = re.findall(r'\d+[.,]?\d*', prompt)
+    data = {
+        "Показатель": prompt[:50],
+        "Цифра": numbers[0] if numbers else "Нет данных"
+    }
+    img_path = create_infographic(data)
+    if img_path:
+        return img_path
+
     print("[ERROR] Все попытки генерации картинки провалились")
     return None
 
@@ -969,6 +953,7 @@ def handle_admin_command(text, chat_id):
             return
 
     if text.startswith('/stats'):
+        # Расширенная статистика для админа (можно оставить как есть)
         rows = execute_query(
             'SELECT COUNT(*) as total, SUM(CASE WHEN status=\'published\' THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status=\'rejected\' THEN 1 ELSE 0 END) as rejected FROM posts',
             fetchone=True
@@ -1030,40 +1015,95 @@ def handle_admin_command(text, chat_id):
 
     send_admin_menu(chat_id)
 
-# ======================== ПОЛЛИНГ =========================
-def poll_updates():
-    offset = 0
-    while True:
+# ======================== ОБНОВЛЕНИЕ СТАТИСТИКИ ДЛЯ ОТЧЁТА =========================
+def update_post_stats():
+    """Обновляет просмотры и реакции для постов за последнюю неделю"""
+    week_ago = (datetime.now() - timedelta(days=7)).isoformat()
+    rows = execute_query(
+        'SELECT id, session_id, message_id FROM posts WHERE status = \'published\' AND published_at >= ? AND message_id IS NOT NULL',
+        (week_ago,), fetch=True
+    )
+    for row in rows:
         try:
-            resp = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates", params={"offset": offset, "timeout": 30, "allowed_updates": ["callback_query", "message"]}, timeout=35)
-            if resp.status_code != 200:
-                time.sleep(5)
-                continue
-            data = resp.json()
-            if not data.get("ok"):
-                time.sleep(5)
-                continue
-            for update in data.get("result", []):
-                offset = update["update_id"] + 1
-                if "callback_query" in update:
-                    cb = update["callback_query"]
-                    cb_data = cb.get("data")
-                    if cb_data:
-                        chat_id = cb["message"]["chat"]["id"]
-                        message_id = cb["id"]
-                        process_callback(cb_data, chat_id, message_id)
-                        try:
-                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery", json={"callback_query_id": cb["id"], "text": "Обрабатываю..."}, timeout=10)
-                        except:
-                            pass
-                elif "message" in update and update["message"].get("chat", {}).get("id") == int(ADMIN_CHAT_ID):
-                    chat_id = update["message"]["chat"]["id"]
-                    text = update["message"].get("text", "")
-                    if text:
-                        handle_admin_command(text, chat_id)
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMessageStatistics"
+            params = {"chat_id": TELEGRAM_CHAT_ID, "message_id": row['message_id']}
+            resp = requests.get(url, params=params, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get('ok'):
+                    stats = data.get('result', {})
+                    views = stats.get('views', 0)
+                    reactions = sum(r.get('count', 0) for r in stats.get('reactions', []))
+                    execute_query(
+                        'UPDATE posts SET views = ?, reactions = ? WHERE id = ?',
+                        (views, reactions, row['id'])
+                    )
+                    # также записываем в publish_times
+                    record_publish_time(row['id'], views, reactions)
+            time.sleep(0.5)  # небольшая задержка, чтобы не перегружать API
         except Exception as e:
-            print(f"[ERROR] poll_updates: {e}")
-            time.sleep(5)
+            print(f"[ERROR] Ошибка обновления статистики для поста {row['session_id']}: {e}")
+
+# ======================== РАСШИРЕННЫЙ ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ =========================
+def weekly_report():
+    week_ago = (datetime.now() - timedelta(days=7)).isoformat()
+    # Базовая статистика
+    stats = execute_query(
+        'SELECT COUNT(*) as total, SUM(CASE WHEN status=\'published\' THEN 1 ELSE 0 END) as published, SUM(CASE WHEN status=\'rejected\' THEN 1 ELSE 0 END) as rejected FROM posts WHERE created_at >= ?',
+        (week_ago,), fetchone=True
+    )
+    # Просмотры и реакции
+    views_reactions = execute_query(
+        'SELECT SUM(views) as total_views, SUM(reactions) as total_reactions, AVG(views) as avg_views FROM posts WHERE status = \'published\' AND published_at >= ? AND views > 0',
+        (week_ago,), fetchone=True
+    )
+    # Самый просматриваемый пост
+    top_post = execute_query(
+        'SELECT text, views, reactions FROM posts WHERE status = \'published\' AND published_at >= ? ORDER BY views DESC LIMIT 1',
+        (week_ago,), fetchone=True
+    )
+    # Топ-5 по просмотрам
+    top5 = execute_query(
+        'SELECT text, views, reactions FROM posts WHERE status = \'published\' AND published_at >= ? ORDER BY views DESC LIMIT 5',
+        (week_ago,), fetch=True
+    )
+
+    msg = "📊 **Еженедельный отчёт:**\n\n"
+    msg += f"Всего постов: {stats['total']}\n"
+    msg += f"Опубликовано: {stats['published']}\n"
+    msg += f"Отклонено: {stats['rejected']}\n\n"
+
+    if views_reactions and views_reactions['total_views']:
+        msg += f"👁 Общее количество просмотров: {views_reactions['total_views']}\n"
+        msg += f"❤️ Общее количество реакций: {views_reactions['total_reactions']}\n"
+        msg += f"📈 Среднее число просмотров на пост: {views_reactions['avg_views']:.1f}\n\n"
+    else:
+        msg += "Нет данных по просмотрам (возможно, посты ещё не набрали статистику).\n\n"
+
+    if top_post:
+        msg += "🏆 **Самый просматриваемый пост недели:**\n"
+        short_text = top_post['text'][:150] + "..." if len(top_post['text']) > 150 else top_post['text']
+        msg += f"• {short_text}\n"
+        msg += f"   👁 {top_post['views']} просмотров, ❤️ {top_post['reactions']} реакций\n\n"
+    else:
+        msg += "Нет опубликованных постов за неделю.\n"
+
+    if top5 and len(top5) > 0:
+        msg += "📌 **Топ-5 постов по просмотрам:**\n"
+        for i, p in enumerate(top5, 1):
+            short = p['text'][:80] + "..." if len(p['text']) > 80 else p['text']
+            msg += f"{i}. {short} (👁 {p['views']}, ❤️ {p['reactions']})\n"
+    else:
+        msg += "Нет данных для топа.\n"
+
+    # Рекомендация времени
+    best_hour = analyze_best_time()
+    if best_hour is not None:
+        msg += f"\n💡 **Лучшее время для публикации:** {best_hour}:00 МСК (на основе статистики)."
+    else:
+        msg += "\n💡 Накопите больше данных для анализа времени публикации."
+
+    send_message(ADMIN_CHAT_ID, msg)
 
 # ======================== ОСТАЛЬНЫЙ КОД =========================
 def check_and_repost():
@@ -1131,6 +1171,7 @@ def digest_job():
         views = row['views'] or 0
         reactions = row['reactions'] or 0
         if row['message_id'] and (views == 0 and reactions == 0):
+            # Попробуем обновить статистику для этого поста
             try:
                 resp = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMessageStatistics", params={"chat_id": TELEGRAM_CHAT_ID, "message_id": row['message_id']}, timeout=10)
                 if resp.status_code == 200:
@@ -1139,7 +1180,7 @@ def digest_job():
                         stats = data.get('result', {})
                         views = stats.get('views', 0)
                         reactions = sum(r.get('count', 0) for r in stats.get('reactions', []))
-                        execute_query('UPDATE posts SET views = ?, reactions = ? WHERE message_id = ?', (views, reactions, row['message_id']))
+                        execute_query('UPDATE posts SET views = ?, reactions = ? WHERE id = ?', (views, reactions, row['id']))
                         record_publish_time(row['id'], views, reactions)
             except Exception as e:
                 print(f"[WARN] Не удалось получить статистику для {row['message_id']}: {e}")
@@ -1152,17 +1193,6 @@ def digest_job():
         digest += "\n💡 Накопите больше данных для анализа времени публикации."
 
     requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": digest, "parse_mode": "Markdown"}, timeout=30)
-
-def weekly_report():
-    stats = get_weekly_stats()
-    if stats:
-        msg = f"📊 Еженедельный отчёт:\nОдобрено: {stats['published']}\nОтклонено: {stats['rejected']}\nВсего создано: {stats['total']}"
-    else:
-        msg = "📊 Недостаточно данных."
-    best_hour = analyze_best_time()
-    if best_hour is not None:
-        msg += f"\n💡 Лучшее время для публикации: {best_hour}:00 МСК."
-    send_message(ADMIN_CHAT_ID, msg)
 
 def job(auto_publish=False, custom_topic=None):
     print(f"[DEBUG] job started at {datetime.now()}")
@@ -1268,8 +1298,9 @@ threading.Thread(target=poll_updates, daemon=True).start()
 schedule.every().day.at("15:00").do(lambda: job(auto_publish=False))
 schedule.every().day.at("07:00").do(publish_scheduled_posts)
 schedule.every().sunday.at("17:00").do(weekly_report)
-schedule.every().sunday.at("17:00").do(digest_job)
+schedule.every().sunday.at("17:00").do(digest_job)  # публичный дайджест
 schedule.every().day.at("03:00").do(backup_db)
+schedule.every().day.at("02:00").do(update_post_stats)  # обновление статистики для отчёта
 
 print("Бот запущен. Ожидание расписания...")
 print(f"Провайдер: {API_PROVIDER}, Модель: {MODEL_NAME}")
