@@ -39,7 +39,6 @@ ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
 UNSPLASH_ACCESS_KEY = os.getenv("UNSPLASH_ACCESS_KEY")
 
-# Проверка ADMIN_CHAT_ID
 if not ADMIN_CHAT_ID:
     print("[WARN] ADMIN_CHAT_ID не задан! Меню и отчёты не будут работать.")
     ADMIN_CHAT_ID = None
@@ -150,6 +149,9 @@ def init_db():
             ''')
             default_prompt = (
                 "Ты — автор канала «Скептик с EBITDA».\n"
+                "Канал пишет о российских ритейлерах и крупном бизнесе: Ozon, Wildberries, Магнит, X5, Лента, ДИКСИ, М.Видео, Яндекс.Маркет, СберМаркет, Ашан, Metro и другие.\n"
+                "Ты можешь упоминать политические события (например, атаки на склады, санкции, изменения законов), но ТОЛЬКО в контексте их влияния на бизнес, финансы и стратегию компаний.\n"
+                "Основной фокус – финансовые показатели: выручка, прибыль, EBITDA, долги, рентабельность, инвестиции.\n"
                 "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
                 "ОБЯЗАТЕЛЬНО используй эмодзи в каждом абзаце (минимум 3–4 разных).\n"
                 "Начинай пост с заголовка с эмодзи, а каждый смысловой блок – с нового эмодзи.\n"
@@ -223,6 +225,9 @@ def init_db():
         ''')
         default_prompt_sqlite = (
             "Ты — автор канала «Скептик с EBITDA».\n"
+            "Канал пишет о российских ритейлерах и крупном бизнесе: Ozon, Wildberries, Магнит, X5, Лента, ДИКСИ, М.Видео, Яндекс.Маркет, СберМаркет, Ашан, Metro и другие.\n"
+            "Ты можешь упоминать политические события (например, атаки на склады, санкции, изменения законов), но ТОЛЬКО в контексте их влияния на бизнес, финансы и стратегию компаний.\n"
+            "Основной фокус – финансовые показатели: выручка, прибыль, EBITDA, долги, рентабельность, инвестиции.\n"
             "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
             "ОБЯЗАТЕЛЬНО используй эмодзи в каждом абзаце (минимум 3–4 разных).\n"
             "Начинай пост с заголовка с эмодзи, а каждый смысловой блок – с нового эмодзи.\n"
@@ -247,7 +252,6 @@ def execute_query(query, params=None, fetch=False, fetchone=False):
         query = query.replace('?', '%s')
         conn = get_db_connection()
         if conn is None:
-            # fallback to SQLite
             return execute_query_sqlite(query, params, fetch, fetchone)
         cur = conn.cursor(cursor_factory=RealDictCursor if fetch or fetchone else None)
         cur.execute(query, params or ())
@@ -298,11 +302,17 @@ def get_topic_from_news():
         "https://www.vedomosti.ru/rss/news",
         "https://www.vedomosti.ru/rss/finance"
     ]
-    keywords = ["ozon", "wildberries", "магнит", "ритейл", "торговля", "нефть", "лукойл", "маркетплейс", "выручка", "прибыль"]
+    keywords = [
+        "ozon", "wildberries", "магнит", "x5", "лента", "дикси", "м.видео",
+        "яндекс.маркет", "сбермаркет", "ашан", "metro", "ритейл", "торговля",
+        "выручка", "прибыль", "ebitda", "маркетплейс", "продажи", "склад",
+        "доставка", "логистика", "маркетинг", "инвестиции", "капитал", "отчёт",
+        "санкции", "атака", "склад", "грузоперевозки", "поставки", "товары"
+    ]
     try:
         for url in rss_urls:
             feed = feedparser.parse(url)
-            for entry in feed.entries[:8]:
+            for entry in feed.entries[:10]:
                 title = entry.title.lower()
                 summary = entry.summary.lower() if hasattr(entry, 'summary') else ""
                 if any(kw in title or kw in summary for kw in keywords):
@@ -314,7 +324,7 @@ def get_topic_from_news():
                                 continue
                         except:
                             pass
-                    return f"{entry.title}. {summary[:150]}"
+                    return f"{entry.title}. {summary[:200]}"
         return DAY_TOPICS.get(datetime.now().weekday(), DAY_TOPICS[0])
     except Exception as e:
         print(f"[WARN] Ошибка RSS: {e}")
@@ -614,6 +624,9 @@ def generate_post(custom_topic=None):
     if not system_prompt:
         system_prompt = (
             "Ты — автор канала «Скептик с EBITDA».\n"
+            "Канал пишет о российских ритейлерах и крупном бизнесе: Ozon, Wildberries, Магнит, X5, Лента, ДИКСИ, М.Видео, Яндекс.Маркет, СберМаркет, Ашан, Metro и другие.\n"
+            "Ты можешь упоминать политические события (например, атаки на склады, санкции, изменения законов), но ТОЛЬКО в контексте их влияния на бизнес, финансы и стратегию компаний.\n"
+            "Основной фокус – финансовые показатели: выручка, прибыль, EBITDA, долги, рентабельность, инвестиции.\n"
             "Стиль: дерзкий, саркастичный, с реальными цифрами.\n"
             "ОБЯЗАТЕЛЬНО используй эмодзи в каждом абзаце (минимум 3–4 разных).\n"
             "Начинай пост с заголовка с эмодзи, а каждый смысловой блок – с нового эмодзи.\n"
@@ -867,7 +880,7 @@ def process_callback(callback_data, chat_id, message_id):
             if not posts:
                 send_message(chat_id, "📭 Нет постов.")
             else:
-                msg = "📜 Последние 5 постов:\n\n"
+                msg = "📜 Последние 5 посты:\n\n"
                 for p in posts:
                     created = p['created_at'][:16] if p['created_at'] else "??"
                     status = p['status']
@@ -999,7 +1012,7 @@ def handle_admin_command(text, chat_id):
         if not posts:
             send_message(chat_id, "📭 Нет постов.")
         else:
-            msg = "📜 Последние 5 постов:\n\n"
+            msg = "📜 Последние 5 посты:\n\n"
             for p in posts:
                 created = p['created_at'][:16] if p['created_at'] else "??"
                 status = p['status']
