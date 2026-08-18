@@ -20,7 +20,7 @@ import shutil
 import sqlite3
 from contextlib import closing
 
-# ======================== ПРОВЕРКА ДОСТУПНОСТИ POSTGRESQL =========================
+# ======================== ПРОВЕРКА POSTGRESQL =========================
 pg_available = False
 try:
     import psycopg2
@@ -29,7 +29,6 @@ try:
     print("[INFO] psycopg2 загружен")
 except ImportError:
     print("[WARN] psycopg2 не найден, будет использован SQLite")
-    pg_available = False
 
 # ======================== КОНФИГУРАЦИЯ =========================
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
@@ -83,7 +82,7 @@ API_DEFAULT_MODEL = config["default_model"]
 if not MODEL_NAME:
     MODEL_NAME = API_DEFAULT_MODEL
 
-# ======================== БАЗА ДАННЫХ (С АВТО-FALLBACK) =========================
+# ======================== БАЗА ДАННЫХ =========================
 db_type = None
 DB_PATH = "posts.db"
 
@@ -523,63 +522,89 @@ def split_into_parts(text, max_len=1000):
         result_parts.append(current_part)
     return result_parts if result_parts else [text[:max_len] + "..."]
 
-# ======================== ПОИСК КАРТИНКИ НА UNSPLASH =========================
-def search_image_unsplash(query):
+# ======================== ПОИСК КАРТИНКИ НА UNSPLASH (УЛУЧШЕННЫЙ) =========================
+def search_image_unsplash(query, max_attempts=3):
     if not UNSPLASH_ACCESS_KEY:
         print("[WARN] UNSPLASH_ACCESS_KEY не задан, возвращаем None")
         return None
-    try:
-        extra_words = ["market", "finance", "business", "store", "shopping", "graph", "chart", "analysis", "retail", "ecommerce", "warehouse", "delivery", "customer", "product", "sale"]
-        word = random.choice(extra_words)
-        search_query = f"{query} {word}"
-        url = "https://api.unsplash.com/search/photos"
-        params = {
-            "query": search_query,
-            "per_page": 5,
-            "orientation": "landscape"
-        }
-        headers = {"Authorization": f"Client-ID {UNSPLASH_ACCESS_KEY}"}
-        resp = requests.get(url, params=params, headers=headers, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("results") and len(data["results"]) > 0:
-                best = None
-                best_width = 0
-                for img in data["results"]:
-                    if img["width"] >= 1200 and img["height"] >= 800 and img["width"] > best_width:
-                        best = img
-                        best_width = img["width"]
-                if not best:
-                    best = data["results"][0]
-                image_url = best["urls"]["regular"]
-                img_resp = requests.get(image_url, timeout=30)
-                if img_resp.status_code == 200:
-                    with open("temp_image.jpg", "wb") as f:
-                        f.write(img_resp.content)
-                    try:
-                        img = Image.open("temp_image.jpg")
-                        if img.width < 800 or img.height < 600:
-                            print("[WARN] Слишком маленькое изображение, удаляем")
-                            os.remove("temp_image.jpg")
-                            return None
-                    except:
-                        pass
-                    return "temp_image.jpg"
-        print(f"[WARN] Unsplash вернул статус {resp.status_code}")
-        return None
-    except Exception as e:
-        print(f"[ERROR] Ошибка при запросе к Unsplash: {e}")
-        return None
 
-# ======================== ГЕНЕРАЦИЯ КАРТИНКИ =========================
+    # Расширяем запрос случайными бизнес-словами для лучшего результата
+    extra_words = ["market", "finance", "business", "store", "shopping", "graph", "chart", "analysis", "retail", "ecommerce", "warehouse", "delivery", "customer", "product", "sale", "office", "team", "strategy", "growth"]
+    word = random.choice(extra_words)
+    search_query = f"{query} {word}"
+
+    for attempt in range(max_attempts):
+        try:
+            url = "https://api.unsplash.com/search/photos"
+            params = {
+                "query": search_query,
+                "per_page": 5,
+                "orientation": "landscape",
+                "content_filter": "high"
+            }
+            headers = {"Authorization": f"Client-ID {UNSPLASH_ACCESS_KEY}"}
+            print(f"[DEBUG] Unsplash запрос (попытка {attempt+1}): {search_query}")
+            resp = requests.get(url, params=params, headers=headers, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("results") and len(data["results"]) > 0:
+                    # Выбираем самое качественное изображение (с наибольшим разрешением)
+                    best = None
+                    best_width = 0
+                    for img in data["results"]:
+                        if img["width"] >= 1200 and img["height"] >= 800 and img["width"] > best_width:
+                            best = img
+                            best_width = img["width"]
+                    if not best:
+                        best = data["results"][0]
+                    image_url = best["urls"]["regular"]  # можно также использовать 'raw' или 'full'
+                    print(f"[DEBUG] Unsplash: выбрано изображение {image_url[:80]}...")
+                    # Скачиваем изображение
+                    img_resp = requests.get(image_url, timeout=30)
+                    if img_resp.status_code == 200:
+                        content = img_resp.content
+                        if len(content) < 10000:
+                            print("[WARN] Слишком маленький файл, вероятно ошибка, повтор")
+                            continue
+                        with open("temp_image.jpg", "wb") as f:
+                            f.write(content)
+                        # Проверка качества
+                        try:
+                            img = Image.open("temp_image.jpg")
+                            if img.width < 800 or img.height < 600:
+                                print("[WARN] Слишком маленькое изображение, удаляем")
+                                os.remove("temp_image.jpg")
+                                continue
+                        except:
+                            pass
+                        return "temp_image.jpg"
+                else:
+                    print(f"[WARN] Unsplash не нашёл результатов для '{search_query}'")
+            else:
+                print(f"[WARN] Unsplash вернул статус {resp.status_code}, попытка {attempt+1}")
+                if resp.status_code == 403:
+                    print("[ERROR] Ключ Unsplash недействителен или исчерпан лимит. Проверьте UNSPLASH_ACCESS_KEY.")
+                    break  # бесполезно продолжать
+            time.sleep(1)
+        except Exception as e:
+            print(f"[ERROR] Ошибка при запросе к Unsplash (попытка {attempt+1}): {e}")
+        time.sleep(2)
+    print("[ERROR] Не удалось получить изображение через Unsplash после нескольких попыток.")
+    return None
+
+# ======================== ГЕНЕРАЦИЯ КАРТИНКИ (С ПРИОРИТЕТОМ UNSPLASH) =========================
 def generate_image(prompt):
+    # 1. Пытаемся через Unsplash
     if UNSPLASH_ACCESS_KEY:
-        img_path = search_image_unsplash(prompt)
+        img_path = search_image_unsplash(prompt, max_attempts=3)
         if img_path:
             return img_path
+    else:
+        print("[WARN] UNSPLASH_ACCESS_KEY отсутствует, используем только Pollinations")
 
+    # 2. Резерв – Pollinations с улучшенным качеством
     print("[WARN] Использую резервную генерацию через Pollinations")
-    enhanced_prompt = f"{prompt}, high quality, sharp, 4k, detailed, professional, clean"
+    enhanced_prompt = f"{prompt}, high quality, 8k, sharp focus, detailed, professional, photorealistic, vibrant colors, business scene"
     if len(enhanced_prompt) > 200:
         enhanced_prompt = enhanced_prompt[:200]
     for attempt in range(3):
@@ -589,8 +614,8 @@ def generate_image(prompt):
             encoded = urllib.parse.quote(full_prompt)
             seed = random.randint(1, 999999)
             ts = int(time.time())
-            url = f"https://image.pollinations.ai/prompt/{encoded}?width=1200&height=800&seed={seed}&t={ts}"
-            print(f"[DEBUG] Pollinations URL (попытка {attempt+1}): {url}")
+            url = f"https://image.pollinations.ai/prompt/{encoded}?width=1920&height=1080&seed={seed}&t={ts}"
+            print(f"[DEBUG] Pollinations URL (попытка {attempt+1}): {url[:100]}...")
             resp = requests.get(url, timeout=90)
             if resp.status_code == 200:
                 content = resp.content
@@ -880,7 +905,7 @@ def process_callback(callback_data, chat_id, message_id):
             if not posts:
                 send_message(chat_id, "📭 Нет постов.")
             else:
-                msg = "📜 Последние 5 посты:\n\n"
+                msg = "📜 Последние 5 постов:\n\n"
                 for p in posts:
                     created = p['created_at'][:16] if p['created_at'] else "??"
                     status = p['status']
@@ -1012,7 +1037,7 @@ def handle_admin_command(text, chat_id):
         if not posts:
             send_message(chat_id, "📭 Нет постов.")
         else:
-            msg = "📜 Последние 5 посты:\n\n"
+            msg = "📜 Последние 5 постов:\n\n"
             for p in posts:
                 created = p['created_at'][:16] if p['created_at'] else "??"
                 status = p['status']
