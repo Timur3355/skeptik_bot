@@ -20,6 +20,17 @@ import shutil
 import sqlite3
 from contextlib import closing
 
+# ======================== ПРОВЕРКА ДОСТУПНОСТИ POSTGRESQL =========================
+pg_available = False
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    pg_available = True
+    print("[INFO] psycopg2 загружен")
+except ImportError:
+    print("[WARN] psycopg2 не найден, будет использован SQLite")
+    pg_available = False
+
 # ======================== КОНФИГУРАЦИЯ =========================
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -27,6 +38,11 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
 UNSPLASH_ACCESS_KEY = os.getenv("UNSPLASH_ACCESS_KEY")
+
+# Проверка ADMIN_CHAT_ID
+if not ADMIN_CHAT_ID:
+    print("[WARN] ADMIN_CHAT_ID не задан! Меню и отчёты не будут работать.")
+    ADMIN_CHAT_ID = None
 
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
 API_PROVIDER = "openai"
@@ -71,13 +87,10 @@ if not MODEL_NAME:
 # ======================== БАЗА ДАННЫХ (С АВТО-FALLBACK) =========================
 db_type = None
 DB_PATH = "posts.db"
-pg_available = False
 
 def get_db_connection():
-    if db_type == 'postgres':
+    if db_type == 'postgres' and pg_available:
         try:
-            import psycopg2
-            from psycopg2.extras import RealDictCursor
             return psycopg2.connect(DATABASE_URL, sslmode='require')
         except Exception as e:
             print(f"[ERROR] PostgreSQL connection failed: {e}")
@@ -89,10 +102,8 @@ def get_db_connection():
 
 def init_db():
     global db_type, pg_available
-    if DATABASE_URL:
+    if DATABASE_URL and pg_available:
         try:
-            import psycopg2
-            from psycopg2.extras import RealDictCursor
             conn = psycopg2.connect(DATABASE_URL, sslmode='require')
             cur = conn.cursor()
             cur.execute('''
@@ -232,13 +243,12 @@ def init_db():
 init_db()
 
 def execute_query(query, params=None, fetch=False, fetchone=False):
-    if db_type == 'postgres':
+    if db_type == 'postgres' and pg_available:
         query = query.replace('?', '%s')
         conn = get_db_connection()
         if conn is None:
             # fallback to SQLite
             return execute_query_sqlite(query, params, fetch, fetchone)
-        from psycopg2.extras import RealDictCursor
         cur = conn.cursor(cursor_factory=RealDictCursor if fetch or fetchone else None)
         cur.execute(query, params or ())
         if fetch:
@@ -274,7 +284,7 @@ def get_prompt():
     return row['content'] if row else None
 
 def set_prompt(content):
-    if db_type == 'postgres':
+    if db_type == 'postgres' and pg_available:
         execute_query('INSERT INTO prompts (name, content) VALUES (%s, %s) ON CONFLICT (name) DO UPDATE SET content = EXCLUDED.content', ('system_prompt', content))
     else:
         execute_query('REPLACE INTO prompts (name, content) VALUES (?, ?)', ('system_prompt', content))
@@ -354,7 +364,7 @@ def backup_db():
 
 # ======================== ФУНКЦИИ ПОСТОВ =========================
 def save_post(session_id, text, image_path, image_prompt, topic, format_type):
-    if db_type == 'postgres':
+    if db_type == 'postgres' and pg_available:
         query = '''
             INSERT INTO posts (session_id, text, image_path, image_prompt, topic, status, created_at, format)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
@@ -551,15 +561,13 @@ def search_image_unsplash(query):
         print(f"[ERROR] Ошибка при запросе к Unsplash: {e}")
         return None
 
-# ======================== ГЕНЕРАЦИЯ КАРТИНКИ (БЕЗ ИНФОГРАФИКИ) =========================
+# ======================== ГЕНЕРАЦИЯ КАРТИНКИ =========================
 def generate_image(prompt):
-    # 1. Пытаемся через Unsplash
     if UNSPLASH_ACCESS_KEY:
         img_path = search_image_unsplash(prompt)
         if img_path:
             return img_path
 
-    # 2. Pollinations с улучшенным промптом
     print("[WARN] Использую резервную генерацию через Pollinations")
     enhanced_prompt = f"{prompt}, high quality, sharp, 4k, detailed, professional, clean"
     if len(enhanced_prompt) > 200:
@@ -786,6 +794,9 @@ def schedule_publish(session_id):
     send_message(ADMIN_CHAT_ID, f"✅ Пост одобрен и запланирован на {publish_time.strftime('%d.%m.%Y %H:%M')} МСК.")
 
 def send_message(chat_id, text, reply_markup=None):
+    if chat_id is None:
+        print("[WARN] chat_id is None, сообщение не отправлено")
+        return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
@@ -797,6 +808,8 @@ def send_message(chat_id, text, reply_markup=None):
 
 # ======================== МЕНЮ АДМИНА =========================
 def send_admin_menu(chat_id):
+    if chat_id is None:
+        return
     text = "🔧 Панель управления ботом:\nВыберите действие:"
     reply_markup = json.dumps({
         "inline_keyboard": [
@@ -917,6 +930,8 @@ def answer_callback(chat_id, message_id, text):
         pass
 
 def handle_admin_command(text, chat_id):
+    if chat_id is None:
+        return
     if chat_id in awaiting_prompt:
         if text == "/cancel":
             del awaiting_prompt[chat_id]
@@ -1120,7 +1135,7 @@ def publish_scheduled_posts():
                 print(f"[{datetime.now()}] ❌ Ошибка публикации {p['session_id']}")
 
 def record_publish_time(post_id, views, reactions):
-    if db_type == 'postgres':
+    if db_type == 'postgres' and pg_available:
         execute_query(
             'INSERT INTO publish_times (post_id, publish_hour, publish_weekday, views, reactions) '
             'SELECT id, EXTRACT(HOUR FROM created_at)::int, EXTRACT(DOW FROM created_at)::int, %s, %s FROM posts WHERE id = %s',
@@ -1221,6 +1236,52 @@ def job(auto_publish=False, custom_topic=None):
         traceback.print_exc()
         send_message(ADMIN_CHAT_ID, f"❌ Ошибка в job: {str(e)[:100]}")
         raise
+
+# ======================== ПОЛЛИНГ ОБНОВЛЕНИЙ =========================
+def poll_updates():
+    offset = 0
+    while True:
+        try:
+            resp = requests.get(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
+                params={"offset": offset, "timeout": 30, "allowed_updates": ["callback_query", "message"]},
+                timeout=35
+            )
+            if resp.status_code != 200:
+                print(f"[ERROR] getUpdates ошибка {resp.status_code}")
+                time.sleep(5)
+                continue
+            data = resp.json()
+            if not data.get("ok"):
+                print(f"[ERROR] getUpdates: {data}")
+                time.sleep(5)
+                continue
+            for update in data.get("result", []):
+                offset = update["update_id"] + 1
+                if "callback_query" in update:
+                    cb = update["callback_query"]
+                    cb_data = cb.get("data")
+                    if cb_data:
+                        chat_id = cb["message"]["chat"]["id"]
+                        message_id = cb["id"]
+                        process_callback(cb_data, chat_id, message_id)
+                        try:
+                            requests.post(
+                                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                                json={"callback_query_id": cb["id"], "text": "Обрабатываю..."},
+                                timeout=10
+                            )
+                        except:
+                            pass
+                elif "message" in update and update["message"].get("chat", {}).get("id") == int(ADMIN_CHAT_ID):
+                    chat_id = update["message"]["chat"]["id"]
+                    text = update["message"].get("text", "")
+                    print(f"[DEBUG] Получено сообщение от админа: {text[:30]}")
+                    if text:
+                        handle_admin_command(text, chat_id)
+        except Exception as e:
+            print(f"[ERROR] poll_updates: {e}")
+            time.sleep(5)
 
 # ======================== ВЕБ-СЕРВЕР =========================
 def run_job_async():
