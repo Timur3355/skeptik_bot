@@ -740,7 +740,6 @@ if image_path and os.path.exists(image_path):
     unique_image_path = f"images/{session_id}.jpg"
     os.rename(image_path, unique_image_path)
     image_path = unique_image_path
-    print(f"[DEBUG] Картинка сохранена как {image_path}")
 # -----------------------------------
 
 ok = send_for_approval(post_text, image_path, image_prompt, session_id, topic, format_type)
