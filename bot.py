@@ -733,16 +733,6 @@ def publish_text_only(text):
 
 def send_for_approval_no_image(post_text, topic, format_type):
     session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
-
-# --- Уникальное имя для картинки ---
-if image_path and os.path.exists(image_path):
-    os.makedirs("images", exist_ok=True)
-    unique_image_path = f"images/{session_id}.jpg"
-    os.rename(image_path, unique_image_path)
-    image_path = unique_image_path
-# -----------------------------------
-
-ok = send_for_approval(post_text, image_path, image_prompt, session_id, topic, format_type)
     save_post(session_id, post_text, "", "", topic, format_type)
     parts = split_into_parts(post_text, max_len=1000)
     total = len(parts)
