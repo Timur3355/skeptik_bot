@@ -411,10 +411,11 @@ def delete_post(session_id):
     execute_query('DELETE FROM posts WHERE session_id = ?', (session_id,))
 
 def get_approved_posts_to_publish():
-    now = datetime.now().isoformat()
+    # Используем UTC время без часового пояса для корректного сравнения со строками в БД
+    now_utc = datetime.utcnow().isoformat()
     rows = execute_query(
         'SELECT session_id, text, image_path FROM posts WHERE status = \'approved\' AND scheduled_publish_time <= ?',
-        (now,), fetch=True
+        (now_utc,), fetch=True
     )
     return rows
 
@@ -828,7 +829,9 @@ def schedule_publish(session_id):
     publish_time = now.replace(hour=10, minute=0, second=0, microsecond=0)
     if now >= publish_time:
         publish_time += timedelta(days=1)
-    update_post_status(session_id, 'approved', scheduled_time=publish_time)
+    # Переводим в UTC и убираем часовой пояс, чтобы сохранить как строку без таймзоны
+    publish_time_utc = publish_time.astimezone(pytz.UTC).replace(tzinfo=None)
+    update_post_status(session_id, 'approved', scheduled_time=publish_time_utc)
     send_message(ADMIN_CHAT_ID, f"✅ Пост одобрен и запланирован на {publish_time.strftime('%d.%m.%Y %H:%M')} МСК.")
 
 def send_message(chat_id, text, reply_markup=None):
