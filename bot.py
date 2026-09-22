@@ -48,16 +48,6 @@ MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
 os.makedirs("images", exist_ok=True)
 
-DAY_TOPICS = {
-    0: "курьёзы из мира бизнеса: абсурдные стартапы, странные сделки, глупые решения компаний",
-    1: "технологические провалы: утечки данных, баги, падения сервисов и их последствия",
-    2: "новости экономики с юмором: санкции, курсы валют, инфляция, странные госзакупки",
-    3: "увольнения и сокращения в IT и ритейле: как компании объясняют свои провалы",
-    4: "абсурдные маркетинговые кампании: реклама, которая взорвала интернет",
-    5: "новости про знаменитостей и бизнесменов: скандалы, заявления, неожиданные решения",
-    6: "недельный дайджест: самые смешные мировые новости за 7 дней"
-}
-
 POST_FORMATS = {
     0: "новость", 1: "мем", 2: "новость", 3: "мем",
     4: "новость", 5: "мем", 6: "аналитика"
@@ -149,6 +139,9 @@ def init_db():
                 publish_weekday INTEGER, views INTEGER, reactions INTEGER)''')
             cur.execute('''CREATE TABLE IF NOT EXISTS series (
                 name TEXT PRIMARY KEY, last_episode INTEGER DEFAULT 0)''')
+            cur.execute('''CREATE TABLE IF NOT EXISTS used_images (
+                image_id TEXT PRIMARY KEY,
+                used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
             default_prompt = (
                 "Ты — автор юмористического новостного канала.\n"
                 "Канал публикует СВЕЖИЕ мировые новости в саркастично-шутливом формате: бизнес, технологии, экономика, стартапы, крупные компании, знаменитости, абсурдные события по всему миру.\n"
@@ -165,7 +158,8 @@ def init_db():
                 "Ключевые цифры выделяй жирным через HTML-тег <b>...</b> (НЕ используй **).\n"
                 "После текста — источник (если неизвестен, укажи 'по данным открытых источников') и хештеги (#тег1 #тег2).\n"
                 "Не используй разделители вроде '---'.\n"
-                "После текста === и описание картинки (англ., 3–4 слова)."
+                "После текста === и описание картинки на английском (5–7 слов), "
+                "обязательно с no text, no letters, no words, no captions, no watermark."
             )
             cur.execute('INSERT INTO prompts (name, content) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING', ('system_prompt', default_prompt))
             conn.commit(); cur.close(); conn.close()
@@ -198,6 +192,9 @@ def init_db():
             FOREIGN KEY(post_id) REFERENCES posts(id))''')
         conn.execute('''CREATE TABLE IF NOT EXISTS series (
             name TEXT PRIMARY KEY, last_episode INTEGER DEFAULT 0)''')
+        conn.execute('''CREATE TABLE IF NOT EXISTS used_images (
+            image_id TEXT PRIMARY KEY,
+            used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
         default_prompt_sqlite = (
             "Ты — автор юмористического новостного канала.\n"
             "Канал публикует СВЕЖИЕ мировые новости в саркастично-шутливом формате: бизнес, технологии, экономика, стартапы, крупные компании, знаменитости, абсурдные события по всему миру.\n"
@@ -214,7 +211,8 @@ def init_db():
             "Ключевые цифры выделяй жирным через HTML-тег <b>...</b> (НЕ используй **).\n"
             "После текста — источник (если неизвестен, укажи 'по данным открытых источников') и хештеги (#тег1 #тег2).\n"
             "Не используй разделители вроде '---'.\n"
-            "После текста === и описание картинки (англ., 3–4 слова)."
+            "После текста === и описание картинки на английском (5–7 слов), "
+            "обязательно с no text, no letters, no words, no captions, no watermark."
         )
         conn.execute('INSERT OR IGNORE INTO prompts (name, content) VALUES (?, ?)', ('system_prompt', default_prompt_sqlite))
         conn.commit()
@@ -376,8 +374,12 @@ def safe_api_call(payload, max_attempts=3, base_delay=3):
     return None
 
 def validate_digest(text):
-    if not text or len(text) < 120: return False
-    if len(text) > 900: return False
+    if not text or len(text) < 100: return False
+    if len(text) > 700: return False
+    low_start = text.lower()[:80]
+    if any(x in low_start for x in ["доброе утро", "всем привет", "привет,", "привет!"]):
+        print("[VALIDATE] Дайджест начинается с приветствия — отклонён", flush=True)
+        return False
     bad = ["===", "<think>", "API временно", "недоступен", "as an ai", "language model", "извините"]
     for m in bad:
         if m.lower() in text.lower(): return False
@@ -392,27 +394,51 @@ def clean_poll_text(text, max_len=95):
         text = text[:max_len-3].rstrip() + "..."
     return text
 
+# ======================== ЗАЩИТА ОТ ПОВТОРОВ КАРТИНОК =========================
+def is_image_used(image_id):
+    if not image_id: return False
+    row = execute_query('SELECT image_id FROM used_images WHERE image_id = ?', (image_id,), fetchone=True)
+    return row is not None
+
+def mark_image_used(image_id):
+    if not image_id: return
+    try:
+        if db_type == 'postgres' and pg_available:
+            execute_query('INSERT INTO used_images (image_id) VALUES (%s) ON CONFLICT (image_id) DO NOTHING', (image_id,))
+        else:
+            execute_query('INSERT OR IGNORE INTO used_images (image_id) VALUES (?)', (image_id,))
+    except Exception as e:
+        print(f"[USED_IMG] {e}", flush=True)
+
 # ======================== КАРТИНКИ =========================
 def search_image_unsplash(query, max_attempts=3):
     if not UNSPLASH_ACCESS_KEY: return None
-    extra = ["news", "cartoon", "satire", "humor", "world", "politics"]
+    extra = ["cartoon", "satire", "editorial", "chaos", "world", "protest", "news", "dramatic"]
     search_query = f"{query} {random.choice(extra)}"
     for attempt in range(max_attempts):
         try:
             url = "https://api.unsplash.com/search/photos"
-            params = {"query": search_query, "per_page": 5, "orientation": "landscape", "content_filter": "high"}
+            params = {"query": search_query, "per_page": 15, "orientation": "landscape", "content_filter": "high"}
             headers = {"Authorization": f"Client-ID {UNSPLASH_ACCESS_KEY}"}
             r = requests.get(url, params=params, headers=headers, timeout=15)
             if r.status_code == 200:
                 data = r.json()
-                if data.get("results"):
-                    img_url = data["results"][0]["urls"]["regular"]
-                    ir = requests.get(img_url, timeout=30)
-                    if ir.status_code == 200 and len(ir.content) > 10000:
-                        os.makedirs("images", exist_ok=True)
-                        unique = f"images/img_{int(time.time())}_{random.randint(1000,9999)}.jpg"
-                        with open(unique, "wb") as f: f.write(ir.content)
-                        return unique
+                results = data.get("results", [])
+                if results:
+                    random.shuffle(results)
+                    for item in results:
+                        img_id = item.get("id", "")
+                        if is_image_used(img_id):
+                            continue
+                        img_url = item["urls"]["regular"]
+                        ir = requests.get(img_url, timeout=30)
+                        if ir.status_code == 200 and len(ir.content) > 10000:
+                            os.makedirs("images", exist_ok=True)
+                            unique = f"images/img_{int(time.time())}_{random.randint(1000,9999)}.jpg"
+                            with open(unique, "wb") as f:
+                                f.write(ir.content)
+                            mark_image_used(img_id)
+                            return unique
             time.sleep(1)
         except Exception as e:
             print(f"[ERROR] Unsplash: {e}", flush=True)
@@ -424,14 +450,29 @@ def generate_image(prompt):
         p = search_image_unsplash(prompt, max_attempts=3)
         if p: return p
     print("[WARN] Pollinations", flush=True)
-    enhanced = f"{prompt}, high quality, 8k, sharp focus, detailed, professional, vibrant, editorial cartoon style"
-    if len(enhanced) > 200: enhanced = enhanced[:200]
+    no_text = (
+        "no text, no letters, no words, no captions, no labels, no signs, "
+        "no watermark, no logo, no signature, no typography, no writing, "
+        "no speech bubbles, clean image, visual only"
+    )
+    enhanced = (
+        f"{prompt}, {no_text}, "
+        f"high quality, 8k, sharp focus, detailed, professional, "
+        f"vibrant colors, editorial cartoon style, cinematic lighting"
+    )
+    if len(enhanced) > 380: enhanced = enhanced[:380]
     for attempt in range(3):
         try:
-            full = enhanced + f" {random.randint(1, 100000)}"
+            random_style = random.choice([
+                "dramatic lighting", "chaotic composition", "bold colors",
+                "cinematic shadows", "high contrast", "energetic mood",
+                "volumetric light", "sharp details", "vibrant tones"
+            ])
+            full = f"{enhanced}, {random_style}, variant {random.randint(1, 999999)}"
             encoded = urllib.parse.quote(full)
-            seed = random.randint(1, 999999); ts = int(time.time())
-            url = f"https://image.pollinations.ai/prompt/{encoded}?width=1920&height=1080&seed={seed}&t={ts}"
+            seed = random.randint(1, 9999999)
+            ts = int(time.time())
+            url = f"https://image.pollinations.ai/prompt/{encoded}?width=1920&height=1080&seed={seed}&nologo=true&t={ts}"
             r = requests.get(url, timeout=90)
             if r.status_code == 200 and len(r.content) > 1000:
                 os.makedirs("images", exist_ok=True)
@@ -466,22 +507,64 @@ def generate_image_strict(prompt, max_attempts=4):
         print(f"[STRICT] Попытка {attempt+1}/{max_attempts} не прошла", flush=True)
     return None
 
+# ======================== СВЕЖАЯ НОВОСТЬ =========================
+def get_fresh_news_for_post():
+    """Собирает свежие новости из RSS и выбирает случайную, которой не было в последних постах."""
+    candidates = []
+    for url in RSS_URLS:
+        try:
+            feed = feedparser.parse(url)
+            for entry in feed.entries[:15]:
+                title = entry.title.strip()
+                summary = re.sub(r'<[^>]+>', '', entry.get('summary', ''))[:250]
+                if len(title) < 20:
+                    continue
+                published = entry.get('published', '')
+                if published:
+                    try:
+                        pub_date = None
+                        for fmt in ('%a, %d %b %Y %H:%M:%S %Z', '%a, %d %b %Y %H:%M:%S %z'):
+                            try:
+                                pub_date = datetime.strptime(published[:25], fmt)
+                                break
+                            except:
+                                continue
+                        if pub_date and (datetime.now() - pub_date.replace(tzinfo=None)).days > 2:
+                            continue
+                    except:
+                        pass
+                candidates.append({'title': title, 'summary': summary})
+        except Exception as e:
+            print(f"[NEWS] RSS {url}: {e}", flush=True)
+
+    if not candidates:
+        return None
+
+    three_days_ago = (datetime.now() - timedelta(days=3)).isoformat()
+    recent = execute_query(
+        "SELECT topic FROM posts WHERE created_at >= ? AND topic IS NOT NULL",
+        (three_days_ago,), fetch=True
+    ) or []
+    recent_titles = set()
+    for r in recent:
+        t = (r['topic'] or "").lower()
+        if t:
+            recent_titles.add(t[:40])
+
+    fresh = [c for c in candidates if c['title'].lower()[:40] not in recent_titles]
+    pool = fresh if fresh else candidates
+    chosen = random.choice(pool)
+    print(f"[NEWS] Выбрана: {chosen['title'][:80]}", flush=True)
+    return f"{chosen['title']}. {chosen['summary']}"
+
 # ======================== ГЕНЕРАЦИЯ ПОСТА =========================
 def generate_post(custom_topic=None):
     if custom_topic:
         topic = custom_topic
     else:
-        topic = None
-        for url in RSS_URLS[:5]:
-            try:
-                feed = feedparser.parse(url)
-                if feed.entries:
-                    e = feed.entries[0]
-                    topic = f"{e.title}. {e.get('summary', '')[:200]}"
-                    break
-            except: continue
+        topic = get_fresh_news_for_post()
         if not topic:
-            topic = DAY_TOPICS.get(datetime.now().weekday(), DAY_TOPICS[0])
+            topic = "самая свежая абсурдная новость из мира за последние сутки"
 
     format_type = POST_FORMATS.get(datetime.now().weekday(), "новость")
     system_prompt = get_prompt()
@@ -511,10 +594,17 @@ def generate_post(custom_topic=None):
     else:
         post_text = full_text.strip(); image_prompt = ""
 
+    no_text_suffix = (
+        "no text, no letters, no words, no captions, no labels, no signs, "
+        "no watermark, no logo, no typography"
+    )
     if len(image_prompt) < 10:
-        image_prompt = f"humorous news cartoon, {topic[:60]}, satirical, funny, colorful"
+        image_prompt = (
+            f"humorous news cartoon, {topic[:60]}, satirical, funny, "
+            f"dramatic editorial illustration, {no_text_suffix}"
+        )
     else:
-        image_prompt += ", humorous news cartoon, satirical, funny, colorful"
+        image_prompt += f", humorous news cartoon, satirical, dramatic editorial, {no_text_suffix}"
     return beautify_post(post_text), image_prompt, topic, format_type
 
 # ======================== ВИРУСНЫЙ ДЕТЕКТОР =========================
@@ -555,7 +645,7 @@ def generate_viral_post():
         "Структура: яркий заголовок с эмодзи → суть → развитие с сарказмом → финальная ирония.\n"
         "НЕ ДЕЛАЙ вывод. Эмодзи в каждом абзаце. Ключевые цифры — <b>...</b>.\n"
         "700–1000 символов. Источник + 3-4 хештега.\n"
-        "После === описание картинки (англ., 3–4 слова)."
+        "После === описание картинки на английском (5-7 слов) с no text, no letters, no watermark."
     )
     payload = {"model": MODEL_NAME, "messages": [
         {"role": "system", "content": prompt},
@@ -570,8 +660,11 @@ def generate_viral_post():
         image_prompt = parts[1].strip() if len(parts) > 1 else ""
     else:
         post_text = full_text.strip(); image_prompt = ""
+    no_text = "no text, no letters, no words, no captions, no watermark, no logo"
     if len(image_prompt) < 10:
-        image_prompt = f"satirical editorial cartoon, {news['title'][:50]}, humorous"
+        image_prompt = f"satirical editorial cartoon, {news['title'][:50]}, humorous, {no_text}"
+    else:
+        image_prompt += f", satirical editorial cartoon, {no_text}"
     post_text = beautify_post(post_text)
     image_path = generate_image_strict(image_prompt, max_attempts=3)
     session_id = f"viral_{int(time.time())}_{random.randint(1000,9999)}"
@@ -592,7 +685,7 @@ def check_urgent_viral():
             "Сделай СРОЧНЫЙ пост: 🚨 в заголовке, суть, шутки, финальная ирония.\n"
             "Эмодзи в каждом абзаце. Ключевые цифры — <b>...</b>.\n"
             "700–1000 символов. Источник + хештеги.\n"
-            "После === описание картинки (англ., 3–4 слова)."
+            "После === описание картинки на английском с no text, no letters, no watermark."
         )
         payload = {"model": MODEL_NAME, "messages": [
             {"role": "system", "content": prompt},
@@ -601,13 +694,14 @@ def check_urgent_viral():
         raw = safe_api_call(payload, max_attempts=3)
         if not raw: return
         full_text = clean_text(raw)
+        no_text = "no text, no letters, no words, no watermark, no logo"
         if "===" in full_text:
             parts = full_text.split("===", 1)
             post_text = parts[0].strip()
             image_prompt = parts[1].strip() if len(parts) > 1 else ""
         else:
             post_text = full_text.strip()
-            image_prompt = f"urgent news cartoon, {news['title'][:50]}, dramatic"
+            image_prompt = f"urgent news cartoon, {news['title'][:50]}, dramatic, {no_text}"
         post_text = beautify_post(post_text)
         image_path = generate_image_strict(image_prompt, max_attempts=3)
         session_id = f"urgent_{int(time.time())}_{random.randint(1000,9999)}"
@@ -653,12 +747,14 @@ def morning_digest():
     items = "\n".join([f"{i+1}. {n['title']} — {n['summary']}" for i, n in enumerate(unique)])
     system = (
         "Ты — автор юмористического новостного канала. Напиши УТРЕННИЙ ДАЙДЖЕСТ.\n"
+        "ВАЖНО: НЕ начинай с приветствия! Никаких 'Доброе утро', 'Привет', 'Всем привет'.\n"
+        "Приветствие уже отправлено отдельным сообщением до тебя.\n"
+        "Начинай сразу с первой новости.\n"
         "Формат (строго!):\n"
-        "☀️ Доброе утро! [одна короткая шутка]\n\n"
         "1️⃣ [Новость 1 в одну строку] + [одна шутка]\n\n"
         "2️⃣ [Новость 2 в одну строку] + [одна шутка]\n\n"
         "3️⃣ [Новость 3 в одну строку] + [одна шутка]\n\n"
-        "Всего 300–500 символов. Эмодзи в каждом блоке.\n"
+        "Всего 250–450 символов. Эмодзи в каждом блоке.\n"
         "Без хештегов. Без источника. Без ссылок.\n"
         "НЕ используй '===' и 'Action Item'. Только русский."
     )
@@ -754,7 +850,7 @@ def friday_meme():
         "Сделай КОРОТКУЮ мем-подпись: до 200 символов, 2-3 эмодзи, максимум иронии.\n"
         "Структура: заголовок → добивающая шутка.\n"
         "Без хештегов, источника, 'вывод'.\n"
-        "После === описание картинки (англ., 3-4 слова, сатирическая карикатура)."
+        "После === описание картинки (англ., 3-4 слова) с no text, no letters, no watermark."
     )
     payload = {"model": MODEL_NAME, "messages": [
         {"role": "system", "content": prompt},
@@ -763,6 +859,7 @@ def friday_meme():
     raw = safe_api_call(payload, max_attempts=3)
     if not raw: return
     full_text = clean_text(raw)
+    no_text = "no text, no letters, no words, no captions, no watermark, no logo"
     if "===" in full_text:
         parts = full_text.split("===", 1)
         post_text = parts[0].strip()
@@ -770,9 +867,9 @@ def friday_meme():
     else:
         post_text = full_text.strip(); image_prompt = ""
     if len(image_prompt) < 10:
-        image_prompt = f"funny satirical cartoon meme, {news['title'][:50]}, humorous"
+        image_prompt = f"funny satirical cartoon meme, {news['title'][:50]}, humorous, {no_text}"
     else:
-        image_prompt += ", funny satirical cartoon meme, humorous"
+        image_prompt += f", funny satirical cartoon meme, {no_text}"
     image_path = generate_image_strict(image_prompt, max_attempts=4)
     session_id = f"meme_{int(time.time())}_{random.randint(1000,9999)}"
     if image_path:
@@ -811,7 +908,7 @@ def ai_killed_series():
         "Финал — саркастичная мысль про следующую жертву.\n"
         "Эмодзи в каждом абзаце. Ключевые цифры — <b>...</b>.\n"
         "700–1000 символов. 3-4 хештега.\n"
-        "После === описание картинки (англ., 3-4 слова)."
+        "После === описание картинки (англ., 3-4 слова) с no text, no letters, no watermark."
     )
     payload = {"model": MODEL_NAME, "messages": [
         {"role": "system", "content": prompt},
@@ -820,6 +917,7 @@ def ai_killed_series():
     raw = safe_api_call(payload, max_attempts=3)
     if not raw: return
     full_text = clean_text(raw)
+    no_text = "no text, no letters, no words, no watermark, no logo"
     if "===" in full_text:
         parts = full_text.split("===", 1)
         post_text = parts[0].strip()
@@ -827,7 +925,7 @@ def ai_killed_series():
     else:
         post_text = full_text.strip(); image_prompt = ""
     if len(image_prompt) < 10:
-        image_prompt = f"robot replacing human worker, satirical cartoon, {profession}, funny"
+        image_prompt = f"robot replacing human worker, satirical cartoon, {profession}, funny, {no_text}"
     post_text = beautify_post(post_text)
     image_path = generate_image_strict(image_prompt, max_attempts=3)
     session_id = f"aikilled_{int(time.time())}_{random.randint(1000,9999)}"
@@ -1319,8 +1417,8 @@ schedule.every().day.at("01:00").do(update_post_stats)
 print("=" * 50, flush=True)
 print("🚀 Бот запущен!", flush=True)
 print(f"Провайдер: {API_PROVIDER}, Модель: {MODEL_NAME}", flush=True)
-print("Генерация на модерацию: 10:00, 13:00, 16:00, 18:30, 21:00, 21:30 МСК", flush=True)
-print("☀️ 07:30 приветствие → 08:00 дайджест", flush=True)
+print("Генерация: 10:00, 13:00, 16:00, 18:30, 21:00, 21:30 МСК", flush=True)
+print("☀️ 07:30 приветствие → 08:00 дайджест (без 'Доброе утро')", flush=True)
 print("🌙 22:30 спокойной ночи", flush=True)
 print("🔥 Вирусные: вт/пт 12:00 | 😂 Мем: пт 16:00 | 🤖 ИИ: ср 14:00 | 🗳 Опрос: вс 19:00", flush=True)
 print(f"Unsplash: {'подключён' if UNSPLASH_ACCESS_KEY else 'не подключён'}", flush=True)
