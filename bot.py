@@ -151,15 +151,14 @@ def init_db():
                 "Начинай пост с яркого заголовка с эмодзи.\n"
                 "Добавляй ёмкие шутки, сарказм и неожиданные метафоры (например, 'нейросеть? нет, ночная смена').\n"
                 "Структура: заголовок → суть новости → развитие сюжета с шутками → неожиданный поворот или финальная ирония.\n"
+                "КРИТИЧЕСКИ ВАЖНО ПРО ДЛИНУ: пост должен быть 500–900 символов (5–7 предложений). СТРОГО не превышай 1000 символов. Это 3 полноценных абзаца, не больше. НЕ РАЗДУВАЙ текст, пиши плотно и по делу. Если чувствуешь, что не укладываешься — сожми, но сохрани шутку. ОБЯЗАТЕЛЬНО заканчивай точкой, восклицанием или вопросом.\n"
                 "НЕ ДЕЛАЙ блок 'вывод' или 'Action Item' — просто заканчивай пост сильной шуткой или ироничным наблюдением.\n"
                 "Не используй шаблонные фразы, будь оригинальным.\n"
                 "Используй ТОЛЬКО свежие новости (последние 1–3 дня).\n"
-                "Пост должен быть 700–1000 символов (7–9 предложений). ОБЯЗАТЕЛЬНО заканчивай точкой, восклицанием или вопросом.\n"
                 "Ключевые цифры выделяй жирным через HTML-тег <b>...</b> (НЕ используй **).\n"
-                "После текста — источник (если неизвестен, укажи 'по данным открытых источников') и хештеги (#тег1 #тег2).\n"
+                "После текста — источник (если неизвестен, укажи 'по данным открытых источников') и 3-4 хештега.\n"
                 "Не используй разделители вроде '---'.\n"
-                "После текста === и описание картинки на английском (5–7 слов), "
-                "обязательно с no text, no letters, no words, no captions, no watermark."
+                "После текста === и описание картинки на английском (5–7 слов), обязательно с no text, no letters, no words, no captions, no watermark."
             )
             cur.execute('INSERT INTO prompts (name, content) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING', ('system_prompt', default_prompt))
             conn.commit(); cur.close(); conn.close()
@@ -204,15 +203,14 @@ def init_db():
             "Начинай пост с яркого заголовка с эмодзи.\n"
             "Добавляй ёмкие шутки, сарказм и неожиданные метафоры (например, 'нейросеть? нет, ночная смена').\n"
             "Структура: заголовок → суть новости → развитие сюжета с шутками → неожиданный поворот или финальная ирония.\n"
+            "КРИТИЧЕСКИ ВАЖНО ПРО ДЛИНУ: пост должен быть 500–900 символов (5–7 предложений). СТРОГО не превышай 1000 символов. Это 3 полноценных абзаца, не больше. НЕ РАЗДУВАЙ текст, пиши плотно и по делу. Если чувствуешь, что не укладываешься — сожми, но сохрани шутку. ОБЯЗАТЕЛЬНО заканчивай точкой, восклицанием или вопросом.\n"
             "НЕ ДЕЛАЙ блок 'вывод' или 'Action Item' — просто заканчивай пост сильной шуткой или ироничным наблюдением.\n"
             "Не используй шаблонные фразы, будь оригинальным.\n"
             "Используй ТОЛЬКО свежие новости (последние 1–3 дня).\n"
-            "Пост должен быть 700–1000 символов (7–9 предложений). ОБЯЗАТЕЛЬНО заканчивай точкой, восклицанием или вопросом.\n"
             "Ключевые цифры выделяй жирным через HTML-тег <b>...</b> (НЕ используй **).\n"
-            "После текста — источник (если неизвестен, укажи 'по данным открытых источников') и хештеги (#тег1 #тег2).\n"
+            "После текста — источник (если неизвестен, укажи 'по данным открытых источников') и 3-4 хештега.\n"
             "Не используй разделители вроде '---'.\n"
-            "После текста === и описание картинки на английском (5–7 слов), "
-            "обязательно с no text, no letters, no words, no captions, no watermark."
+            "После текста === и описание картинки на английском (5–7 слов), обязательно с no text, no letters, no words, no captions, no watermark."
         )
         conn.execute('INSERT OR IGNORE INTO prompts (name, content) VALUES (?, ?)', ('system_prompt', default_prompt_sqlite))
         conn.commit()
@@ -569,12 +567,12 @@ def generate_post(custom_topic=None):
     format_type = POST_FORMATS.get(datetime.now().weekday(), "новость")
     system_prompt = get_prompt()
     format_style = {
-        "мем": "Сделай пост с юмором и сарказмом, но не короче 600 символов.",
-        "новость": "Информативный пост с фактами, датами и цифрами, не короче 700 символов.",
-        "аналитика": "Глубокий разбор с иронией, не короче 700 символов."
+        "мем": "Сделай пост с юмором и сарказмом, но не короче 500 символов.",
+        "новость": "Информативный пост с фактами, датами и цифрами, не короче 500 символов.",
+        "аналитика": "Глубокий разбор с иронией, не короче 500 символов."
     }.get(format_type, "")
 
-    user_prompt = f"Напиши пост на тему: {topic}. {format_style} Используй свежие новости."
+    user_prompt = f"Напиши пост на тему: {topic}. {format_style} Используй свежие новости. Помни: 500–900 символов, не больше 1000."
     payload = {"model": MODEL_NAME, "messages": [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt}
@@ -644,7 +642,7 @@ def generate_viral_post():
         "Стиль: дерзкий, ироничный, с неожиданными метафорами (как 'нейросеть? нет, ночная смена').\n"
         "Структура: яркий заголовок с эмодзи → суть → развитие с сарказмом → финальная ирония.\n"
         "НЕ ДЕЛАЙ вывод. Эмодзи в каждом абзаце. Ключевые цифры — <b>...</b>.\n"
-        "700–1000 символов. Источник + 3-4 хештега.\n"
+        "500–900 символов, СТРОГО не больше 1000. Источник + 3-4 хештега.\n"
         "После === описание картинки на английском (5-7 слов) с no text, no letters, no watermark."
     )
     payload = {"model": MODEL_NAME, "messages": [
@@ -684,7 +682,7 @@ def check_urgent_viral():
             "Ты — автор юмористического канала. СРОЧНАЯ СЕНСАЦИЯ!\n"
             "Сделай СРОЧНЫЙ пост: 🚨 в заголовке, суть, шутки, финальная ирония.\n"
             "Эмодзи в каждом абзаце. Ключевые цифры — <b>...</b>.\n"
-            "700–1000 символов. Источник + хештеги.\n"
+            "500–900 символов, не больше 1000. Источник + хештеги.\n"
             "После === описание картинки на английском с no text, no letters, no watermark."
         )
         payload = {"model": MODEL_NAME, "messages": [
@@ -907,7 +905,7 @@ def ai_killed_series():
         "2-3 абзаца — что случилось, реальные примеры, шутка.\n"
         "Финал — саркастичная мысль про следующую жертву.\n"
         "Эмодзи в каждом абзаце. Ключевые цифры — <b>...</b>.\n"
-        "700–1000 символов. 3-4 хештега.\n"
+        "500–900 символов, не больше 1000. 3-4 хештега.\n"
         "После === описание картинки (англ., 3-4 слова) с no text, no letters, no watermark."
     )
     payload = {"model": MODEL_NAME, "messages": [
@@ -967,18 +965,78 @@ def publish_text_only(text):
     return True
 
 def publish_to_telegram(text, image_path, session_id=None):
-    if not image_path or not os.path.exists(image_path): return False
-    with open(image_path, "rb") as photo:
-        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
-                          files={"photo": photo}, data={"chat_id": TELEGRAM_CHAT_ID}, timeout=30)
-        if r.status_code != 200: return False
-        if session_id:
-            mid = r.json().get('result', {}).get('message_id')
-            if mid: execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (mid, session_id))
-    for part in split_into_parts(text, max_len=1000):
-        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                          json={"chat_id": TELEGRAM_CHAT_ID, "text": part, "parse_mode": "HTML"}, timeout=30)
-        if r.status_code != 200: return False
+    """Публикует фото + текст: 1 сообщение (если текст ≤1024), иначе 2 (фото + текст)."""
+    if not image_path or not os.path.exists(image_path):
+        return False
+
+    # === СЛУЧАЙ 1: текст укладывается в подпись к фото (≤1024) ===
+    if len(text) <= 1024:
+        try:
+            with open(image_path, "rb") as photo:
+                r = requests.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
+                    files={"photo": photo},
+                    data={"chat_id": TELEGRAM_CHAT_ID, "caption": text, "parse_mode": "HTML"},
+                    timeout=30
+                )
+                if r.status_code == 200:
+                    if session_id:
+                        mid = r.json().get('result', {}).get('message_id')
+                        if mid:
+                            execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (mid, session_id))
+                    print(f"[PUBLISH] ✅ Отправлено одним сообщением ({len(text)} симв.)", flush=True)
+                    return True
+                print(f"[PUBLISH] sendPhoto с caption не прошёл: {r.text[:200]}", flush=True)
+        except Exception as e:
+            print(f"[PUBLISH] Ошибка sendPhoto+caption: {e}", flush=True)
+
+    # === СЛУЧАЙ 2: фото отдельно + текст отдельно (≤4096) ===
+    try:
+        with open(image_path, "rb") as photo:
+            r = requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
+                files={"photo": photo},
+                data={"chat_id": TELEGRAM_CHAT_ID},
+                timeout=30
+            )
+            if r.status_code != 200:
+                print(f"[PUBLISH] sendPhoto не прошёл: {r.text[:200]}", flush=True)
+                return False
+            if session_id:
+                mid = r.json().get('result', {}).get('message_id')
+                if mid:
+                    execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (mid, session_id))
+    except Exception as e:
+        print(f"[PUBLISH] Ошибка sendPhoto: {e}", flush=True)
+        return False
+
+    if len(text) <= 4096:
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"},
+            timeout=30
+        )
+        if r.status_code == 200:
+            print(f"[PUBLISH] ✅ Отправлено: фото + текст ({len(text)} симв.)", flush=True)
+            return True
+        print(f"[PUBLISH] sendMessage не прошёл: {r.text[:200]}", flush=True)
+        r2 = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": re.sub(r'<[^>]+>', '', text)},
+            timeout=30
+        )
+        return r2.status_code == 200
+
+    # === СЛУЧАЙ 3: длинный текст (>4096) — режем ===
+    print(f"[PUBLISH] Текст слишком длинный ({len(text)}), режем на части", flush=True)
+    for part in split_into_parts(text, max_len=4000):
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": part, "parse_mode": "HTML"},
+            timeout=30
+        )
+        if r.status_code != 200:
+            return False
     return True
 
 def send_for_approval_no_image(post_text, topic, format_type):
