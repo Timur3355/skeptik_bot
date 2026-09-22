@@ -151,7 +151,10 @@ def init_db():
                 "Начинай пост с яркого заголовка с эмодзи.\n"
                 "Добавляй ёмкие шутки, сарказм и неожиданные метафоры (например, 'нейросеть? нет, ночная смена').\n"
                 "Структура: заголовок → суть новости → развитие сюжета с шутками → неожиданный поворот или финальная ирония.\n"
-                "КРИТИЧЕСКИ ВАЖНО ПРО ДЛИНУ: пост должен быть 500–900 символов (5–7 предложений). СТРОГО не превышай 1000 символов. Это 3 полноценных абзаца, не больше. НЕ РАЗДУВАЙ текст, пиши плотно и по делу. Если чувствуешь, что не укладываешься — сожми, но сохрани шутку. ОБЯЗАТЕЛЬНО заканчивай точкой, восклицанием или вопросом.\n"
+                "СВЕРХВАЖНО ПРО ДЛИНУ: пост должен быть РОВНО 700–900 символов, НИКОГДА не превышай 950 символов. "
+                "Это 3 абзаца по 2–3 коротких предложения. Пиши плотно, без воды, без повторов, без пересказа одного и того же. "
+                "Если не укладываешься — сокращай шутки, но не теряй смысл. Лучше короче, чем длиннее. "
+                "ЗАПРЕЩЕНО писать больше 950 символов. Тексты длиннее будут обрезаны автоматически. ОБЯЗАТЕЛЬНО заканчивай точкой, восклицанием или вопросом.\n"
                 "НЕ ДЕЛАЙ блок 'вывод' или 'Action Item' — просто заканчивай пост сильной шуткой или ироничным наблюдением.\n"
                 "Не используй шаблонные фразы, будь оригинальным.\n"
                 "Используй ТОЛЬКО свежие новости (последние 1–3 дня).\n"
@@ -203,7 +206,10 @@ def init_db():
             "Начинай пост с яркого заголовка с эмодзи.\n"
             "Добавляй ёмкие шутки, сарказм и неожиданные метафоры (например, 'нейросеть? нет, ночная смена').\n"
             "Структура: заголовок → суть новости → развитие сюжета с шутками → неожиданный поворот или финальная ирония.\n"
-            "КРИТИЧЕСКИ ВАЖНО ПРО ДЛИНУ: пост должен быть 500–900 символов (5–7 предложений). СТРОГО не превышай 1000 символов. Это 3 полноценных абзаца, не больше. НЕ РАЗДУВАЙ текст, пиши плотно и по делу. Если чувствуешь, что не укладываешься — сожми, но сохрани шутку. ОБЯЗАТЕЛЬНО заканчивай точкой, восклицанием или вопросом.\n"
+            "СВЕРХВАЖНО ПРО ДЛИНУ: пост должен быть РОВНО 700–900 символов, НИКОГДА не превышай 950 символов. "
+            "Это 3 абзаца по 2–3 коротких предложения. Пиши плотно, без воды, без повторов, без пересказа одного и того же. "
+            "Если не укладываешься — сокращай шутки, но не теряй смысл. Лучше короче, чем длиннее. "
+            "ЗАПРЕЩЕНО писать больше 950 символов. Тексты длиннее будут обрезаны автоматически. ОБЯЗАТЕЛЬНО заканчивай точкой, восклицанием или вопросом.\n"
             "НЕ ДЕЛАЙ блок 'вывод' или 'Action Item' — просто заканчивай пост сильной шуткой или ироничным наблюдением.\n"
             "Не используй шаблонные фразы, будь оригинальным.\n"
             "Используй ТОЛЬКО свежие новости (последние 1–3 дня).\n"
@@ -321,6 +327,132 @@ def beautify_post(text):
     text = re.sub(r'\b(\d+[.,]?\d*)\b', replacer, text)
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text
+
+def trim_post_text(text, max_len=950):
+    """Умная обрезка с сохранением смысла: абзацы → предложения → запятые → слова."""
+    if not text:
+        return text
+    text = text.strip()
+    if len(text) <= max_len:
+        return text
+
+    # 1. Отделяем хвост (источник + хештеги)
+    tail = ""
+    hashtag_match = re.search(r'(\n*((?:#\w+\s*)+))\s*$', text)
+    hashtags_block = ""
+    if hashtag_match:
+        hashtags_block = hashtag_match.group(2).strip()
+        text = text[:hashtag_match.start()].rstrip()
+
+    source_block = ""
+    source_match = re.search(
+        r'(\n*(?:по данным|источник|source|по сообщению)[^\n]*)\s*$',
+        text, re.IGNORECASE
+    )
+    if source_match:
+        source_block = source_match.group(1).strip()
+        text = text[:source_match.start()].rstrip()
+
+    if source_block:
+        tail += "\n\n" + source_block
+    if hashtags_block:
+        tail += "\n\n" + hashtags_block
+
+    body_limit = max_len - len(tail) - 3
+    if body_limit < 100:
+        hashtags_block = hashtags_block[:50]
+        source_block = ""
+        tail = "\n\n" + hashtags_block if hashtags_block else ""
+        body_limit = max_len - len(tail) - 3
+
+    # 2. Пробуем резать по абзацам
+    paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
+    if len(paragraphs) > 1:
+        result = ""
+        for p in paragraphs:
+            candidate = (result + "\n\n" + p) if result else p
+            if len(candidate) > body_limit:
+                break
+            result = candidate
+        if result and len(result) >= body_limit * 0.7:
+            return result + tail
+
+    # 3. Режем по предложениям
+    sentences = re.split(r'(?<=[.!?…])\s+', text)
+    sentences = [s.strip() for s in sentences if s.strip()]
+    result = ""
+    for s in sentences:
+        candidate = (result + " " + s) if result else s
+        if len(candidate) > body_limit:
+            break
+        result = candidate
+    if result and len(result) >= body_limit * 0.6:
+        if result[-1] in '.!?…':
+            return result + tail
+        return result.rstrip(' .,;:') + "…" + tail
+
+    # 4. Режем по запятым
+    if not result:
+        parts = re.split(r'(?<=,)\s+', text)
+        for p in parts:
+            candidate = (result + " " + p) if result else p
+            if len(candidate) > body_limit:
+                break
+            result = candidate
+
+    # 5. Крайний случай: по словам
+    if not result or len(result) < body_limit * 0.4:
+        words = text.split()
+        result = ""
+        for w in words:
+            candidate = (result + " " + w) if result else w
+            if len(candidate) > body_limit:
+                break
+            result = candidate
+        result = result.rstrip(' .,;:')
+
+    # 6. Финальная зачистка
+    result = result.rstrip()
+    if result and result[-1] not in '.!?…':
+        result = result.rstrip(' .,;:—–-') + "…"
+    return result + tail
+
+
+def shorten_post_with_ai(text, target_len=900):
+    """Просит AI сократить текст до target_len, сохраняя смысл и стиль."""
+    if len(text) <= target_len:
+        return text
+    prompt = (
+        f"Сократи этот пост до {target_len} символов МАКСИМУМ. "
+        f"Сохрани ВСЕ шутки, эмодзи, хештеги и источник в конце. "
+        f"Убери воду, повторы, второстепенные детали. "
+        f"НЕ МЕНЯЙ стиль, НЕ ДОБАВЛЯЙ нового. Просто сожми.\n"
+        f"ВАЖНО: текст после сокращения не должен превышать {target_len} символов.\n\n"
+        f"ТЕКСТ:\n{text}"
+    )
+    payload = {"model": MODEL_NAME, "messages": [
+        {"role": "user", "content": prompt}
+    ], "temperature": 0.3, "max_tokens": 1200}
+    raw = safe_api_call(payload, max_attempts=2)
+    if raw:
+        return clean_text(raw)
+    return text
+
+
+def finalize_post(text, target_len=950):
+    """Финальная обработка: сокращение через AI + умная обрезка."""
+    text = beautify_post(text)
+    # Если текст превышает целевой лимит — сначала пробуем умное сокращение через AI
+    if len(text) > target_len:
+        print(f"[FINALIZE] Текст {len(text)} симв. — сокращаю через AI", flush=True)
+        text = shorten_post_with_ai(text, target_len=target_len - 30)
+        text = beautify_post(text)
+    # Страховка: если всё равно длинный — умная обрезка
+    if len(text) > target_len:
+        print(f"[FINALIZE] Всё ещё {len(text)} — применяю trim_post_text", flush=True)
+        text = trim_post_text(text, max_len=target_len)
+    return text
+
 
 def split_into_parts(text, max_len=1000):
     if len(text) <= max_len: return [text]
@@ -507,7 +639,6 @@ def generate_image_strict(prompt, max_attempts=4):
 
 # ======================== СВЕЖАЯ НОВОСТЬ =========================
 def get_fresh_news_for_post():
-    """Собирает свежие новости из RSS и выбирает случайную, которой не было в последних постах."""
     candidates = []
     for url in RSS_URLS:
         try:
@@ -567,16 +698,20 @@ def generate_post(custom_topic=None):
     format_type = POST_FORMATS.get(datetime.now().weekday(), "новость")
     system_prompt = get_prompt()
     format_style = {
-        "мем": "Сделай пост с юмором и сарказмом, но не короче 500 символов.",
-        "новость": "Информативный пост с фактами, датами и цифрами, не короче 500 символов.",
-        "аналитика": "Глубокий разбор с иронией, не короче 500 символов."
+        "мем": "Юмор и сарказм. КОРОТКО — 700–900 символов, 3 абзаца.",
+        "новость": "Информативный пост с фактами и цифрами. КОРОТКО — 700–900 символов, 3 абзаца.",
+        "аналитика": "Глубокий разбор с иронией. КОРОТКО — 700–900 символов, 3 абзаца."
     }.get(format_type, "")
 
-    user_prompt = f"Напиши пост на тему: {topic}. {format_style} Используй свежие новости. Помни: 500–900 символов, не больше 1000."
+    user_prompt = (
+        f"Напиши пост на тему: {topic}. {format_style} "
+        f"СВЕРХВАЖНО: НЕ БОЛЬШЕ 900 СИМВОЛОВ. Если напишешь больше — текст будет обрезан. "
+        f"Пиши плотно, без воды. Используй свежие новости."
+    )
     payload = {"model": MODEL_NAME, "messages": [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt}
-    ], "temperature": 0.9, "max_tokens": 1500}
+    ], "temperature": 0.9, "max_tokens": 1200}
 
     raw = safe_api_call(payload, max_attempts=3)
     if not raw:
@@ -603,7 +738,9 @@ def generate_post(custom_topic=None):
         )
     else:
         image_prompt += f", humorous news cartoon, satirical, dramatic editorial, {no_text_suffix}"
-    return beautify_post(post_text), image_prompt, topic, format_type
+
+    post_text = finalize_post(post_text, target_len=950)
+    return post_text, image_prompt, topic, format_type
 
 # ======================== ВИРУСНЫЙ ДЕТЕКТОР =========================
 def find_viral_news():
@@ -639,16 +776,16 @@ def generate_viral_post():
         return None
     prompt = (
         "Ты — автор юмористического новостного канала, специализирующийся на САМЫХ АБСУРДНЫХ мировых новостях.\n"
-        "Стиль: дерзкий, ироничный, с неожиданными метафорами (как 'нейросеть? нет, ночная смена').\n"
+        "Стиль: дерзкий, ироничный, с неожиданными метафорами.\n"
         "Структура: яркий заголовок с эмодзи → суть → развитие с сарказмом → финальная ирония.\n"
         "НЕ ДЕЛАЙ вывод. Эмодзи в каждом абзаце. Ключевые цифры — <b>...</b>.\n"
-        "500–900 символов, СТРОГО не больше 1000. Источник + 3-4 хештега.\n"
+        "СВЕРХВАЖНО: НЕ БОЛЬШЕ 900 СИМВОЛОВ. Пиши плотно, 3 абзаца. Источник + 3-4 хештега.\n"
         "После === описание картинки на английском (5-7 слов) с no text, no letters, no watermark."
     )
     payload = {"model": MODEL_NAME, "messages": [
         {"role": "system", "content": prompt},
-        {"role": "user", "content": f"НОВОСТЬ:\n{news['title']}\n{news['summary']}\n\nСделай вирусный пост."}
-    ], "temperature": 0.95, "max_tokens": 1500}
+        {"role": "user", "content": f"НОВОСТЬ:\n{news['title']}\n{news['summary']}\n\nСделай вирусный пост. Максимум 900 символов."}
+    ], "temperature": 0.95, "max_tokens": 1200}
     raw = safe_api_call(payload, max_attempts=3)
     if not raw: return None
     full_text = clean_text(raw)
@@ -663,7 +800,8 @@ def generate_viral_post():
         image_prompt = f"satirical editorial cartoon, {news['title'][:50]}, humorous, {no_text}"
     else:
         image_prompt += f", satirical editorial cartoon, {no_text}"
-    post_text = beautify_post(post_text)
+
+    post_text = finalize_post(post_text, target_len=950)
     image_path = generate_image_strict(image_prompt, max_attempts=3)
     session_id = f"viral_{int(time.time())}_{random.randint(1000,9999)}"
     if image_path:
@@ -682,13 +820,13 @@ def check_urgent_viral():
             "Ты — автор юмористического канала. СРОЧНАЯ СЕНСАЦИЯ!\n"
             "Сделай СРОЧНЫЙ пост: 🚨 в заголовке, суть, шутки, финальная ирония.\n"
             "Эмодзи в каждом абзаце. Ключевые цифры — <b>...</b>.\n"
-            "500–900 символов, не больше 1000. Источник + хештеги.\n"
+            "СВЕРХВАЖНО: НЕ БОЛЬШЕ 900 СИМВОЛОВ. 3 абзаца. Источник + хештеги.\n"
             "После === описание картинки на английском с no text, no letters, no watermark."
         )
         payload = {"model": MODEL_NAME, "messages": [
             {"role": "system", "content": prompt},
-            {"role": "user", "content": f"НОВОСТЬ:\n{news['title']}\n{news['summary']}"}
-        ], "temperature": 0.95, "max_tokens": 1500}
+            {"role": "user", "content": f"НОВОСТЬ:\n{news['title']}\n{news['summary']}\n\nМаксимум 900 символов."}
+        ], "temperature": 0.95, "max_tokens": 1200}
         raw = safe_api_call(payload, max_attempts=3)
         if not raw: return
         full_text = clean_text(raw)
@@ -700,7 +838,7 @@ def check_urgent_viral():
         else:
             post_text = full_text.strip()
             image_prompt = f"urgent news cartoon, {news['title'][:50]}, dramatic, {no_text}"
-        post_text = beautify_post(post_text)
+        post_text = finalize_post(post_text, target_len=950)
         image_path = generate_image_strict(image_prompt, max_attempts=3)
         session_id = f"urgent_{int(time.time())}_{random.randint(1000,9999)}"
         if image_path:
@@ -905,13 +1043,13 @@ def ai_killed_series():
         "2-3 абзаца — что случилось, реальные примеры, шутка.\n"
         "Финал — саркастичная мысль про следующую жертву.\n"
         "Эмодзи в каждом абзаце. Ключевые цифры — <b>...</b>.\n"
-        "500–900 символов, не больше 1000. 3-4 хештега.\n"
+        "СВЕРХВАЖНО: НЕ БОЛЬШЕ 900 СИМВОЛОВ. 3 абзаца. 3-4 хештега.\n"
         "После === описание картинки (англ., 3-4 слова) с no text, no letters, no watermark."
     )
     payload = {"model": MODEL_NAME, "messages": [
         {"role": "system", "content": prompt},
-        {"role": "user", "content": f"Сделай выпуск #{episode} про профессию: {profession}. Реальные цифры 2024-2026."}
-    ], "temperature": 0.9, "max_tokens": 1500}
+        {"role": "user", "content": f"Сделай выпуск #{episode} про профессию: {profession}. Реальные цифры 2024-2026. Максимум 900 символов."}
+    ], "temperature": 0.9, "max_tokens": 1200}
     raw = safe_api_call(payload, max_attempts=3)
     if not raw: return
     full_text = clean_text(raw)
@@ -924,7 +1062,7 @@ def ai_killed_series():
         post_text = full_text.strip(); image_prompt = ""
     if len(image_prompt) < 10:
         image_prompt = f"robot replacing human worker, satirical cartoon, {profession}, funny, {no_text}"
-    post_text = beautify_post(post_text)
+    post_text = finalize_post(post_text, target_len=950)
     image_path = generate_image_strict(image_prompt, max_attempts=3)
     session_id = f"aikilled_{int(time.time())}_{random.randint(1000,9999)}"
     if image_path:
@@ -969,7 +1107,6 @@ def publish_to_telegram(text, image_path, session_id=None):
     if not image_path or not os.path.exists(image_path):
         return False
 
-    # === СЛУЧАЙ 1: текст укладывается в подпись к фото (≤1024) ===
     if len(text) <= 1024:
         try:
             with open(image_path, "rb") as photo:
@@ -984,13 +1121,12 @@ def publish_to_telegram(text, image_path, session_id=None):
                         mid = r.json().get('result', {}).get('message_id')
                         if mid:
                             execute_query('UPDATE posts SET message_id = ? WHERE session_id = ?', (mid, session_id))
-                    print(f"[PUBLISH] ✅ Отправлено одним сообщением ({len(text)} симв.)", flush=True)
+                    print(f"[PUBLISH] ✅ Одним сообщением ({len(text)} симв.)", flush=True)
                     return True
-                print(f"[PUBLISH] sendPhoto с caption не прошёл: {r.text[:200]}", flush=True)
+                print(f"[PUBLISH] sendPhoto c caption не прошёл: {r.text[:200]}", flush=True)
         except Exception as e:
             print(f"[PUBLISH] Ошибка sendPhoto+caption: {e}", flush=True)
 
-    # === СЛУЧАЙ 2: фото отдельно + текст отдельно (≤4096) ===
     try:
         with open(image_path, "rb") as photo:
             r = requests.post(
@@ -1017,9 +1153,8 @@ def publish_to_telegram(text, image_path, session_id=None):
             timeout=30
         )
         if r.status_code == 200:
-            print(f"[PUBLISH] ✅ Отправлено: фото + текст ({len(text)} симв.)", flush=True)
+            print(f"[PUBLISH] ✅ Фото + текст ({len(text)} симв.)", flush=True)
             return True
-        print(f"[PUBLISH] sendMessage не прошёл: {r.text[:200]}", flush=True)
         r2 = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             json={"chat_id": TELEGRAM_CHAT_ID, "text": re.sub(r'<[^>]+>', '', text)},
@@ -1027,8 +1162,6 @@ def publish_to_telegram(text, image_path, session_id=None):
         )
         return r2.status_code == 200
 
-    # === СЛУЧАЙ 3: длинный текст (>4096) — режем ===
-    print(f"[PUBLISH] Текст слишком длинный ({len(text)}), режем на части", flush=True)
     for part in split_into_parts(text, max_len=4000):
         r = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
@@ -1042,44 +1175,43 @@ def publish_to_telegram(text, image_path, session_id=None):
 def send_for_approval_no_image(post_text, topic, format_type):
     session_id = f"{int(time.time())}_{random.randint(1000,9999)}"
     save_post(session_id, post_text, "", "", topic, format_type)
-    parts = split_into_parts(post_text, max_len=1000)
-    total = len(parts)
-    for i, part in enumerate(parts, 1):
-        caption = f"📝 Пост (без фото, {i}/{total}):\n\n{part}" if total > 1 else f"📝 Пост (без фото):\n\n{part}"
-        reply_markup = None
-        if i == 1:
-            reply_markup = json.dumps({"inline_keyboard": [[
-                {"text": "✅ Одобрить", "callback_data": f"approve_{session_id}"},
-                {"text": "🔄 Перегенерировать", "callback_data": f"regenerate_{session_id}"},
-                {"text": "✏️ Редактировать", "callback_data": f"edit_{session_id}"},
-                {"text": "❌ Отклонить", "callback_data": f"reject_{session_id}"}
-            ]]})
-        td = {"chat_id": ADMIN_CHAT_ID, "text": caption, "parse_mode": "HTML"}
-        if reply_markup: td["reply_markup"] = reply_markup
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=td, timeout=30)
+    caption = f"📝 Пост (без фото):\n\n{post_text}"
+    reply_markup = json.dumps({"inline_keyboard": [[
+        {"text": "✅ Одобрить", "callback_data": f"approve_{session_id}"},
+        {"text": "🔄 Перегенерировать", "callback_data": f"regenerate_{session_id}"},
+        {"text": "✏️ Редактировать", "callback_data": f"edit_{session_id}"},
+        {"text": "❌ Отклонить", "callback_data": f"reject_{session_id}"}
+    ]]})
+    requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                  json={"chat_id": ADMIN_CHAT_ID, "text": caption, "parse_mode": "HTML",
+                        "reply_markup": reply_markup}, timeout=30)
     return True
 
 def send_for_approval(post_text, image_path, image_prompt, session_id, topic, format_type):
     save_post(session_id, post_text, image_path, image_prompt, topic, format_type)
+    reply_markup = json.dumps({"inline_keyboard": [[
+        {"text": "✅ Одобрить", "callback_data": f"approve_{session_id}"},
+        {"text": "🔄 Перегенерировать", "callback_data": f"regenerate_{session_id}"},
+        {"text": "✏️ Редактировать", "callback_data": f"edit_{session_id}"},
+        {"text": "❌ Отклонить", "callback_data": f"reject_{session_id}"}
+    ]]})
     with open(image_path, "rb") as photo:
-        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
-                          files={"photo": photo}, data={"chat_id": ADMIN_CHAT_ID}, timeout=30)
-        if r.status_code != 200: return False
-    parts = split_into_parts(post_text, max_len=1000)
-    total = len(parts)
-    for i, part in enumerate(parts, 1):
-        caption = f"📝 Пост ({i}/{total}):\n\n{part}" if total > 1 else f"📝 Пост:\n\n{part}"
-        reply_markup = None
-        if i == 1:
-            reply_markup = json.dumps({"inline_keyboard": [[
-                {"text": "✅ Одобрить", "callback_data": f"approve_{session_id}"},
-                {"text": "🔄 Перегенерировать", "callback_data": f"regenerate_{session_id}"},
-                {"text": "✏️ Редактировать", "callback_data": f"edit_{session_id}"},
-                {"text": "❌ Отклонить", "callback_data": f"reject_{session_id}"}
-            ]]})
-        td = {"chat_id": ADMIN_CHAT_ID, "text": caption, "parse_mode": "HTML"}
-        if reply_markup: td["reply_markup"] = reply_markup
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=td, timeout=30)
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
+            files={"photo": photo},
+            data={"chat_id": ADMIN_CHAT_ID, "caption": post_text,
+                  "parse_mode": "HTML", "reply_markup": reply_markup},
+            timeout=30
+        )
+        if r.status_code != 200:
+            print(f"[APPROVAL] sendPhoto не прошёл: {r.text[:200]}", flush=True)
+            # fallback: фото отдельно, текст отдельно
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
+                          files={"photo": open(image_path, "rb")},
+                          data={"chat_id": ADMIN_CHAT_ID}, timeout=30)
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                          json={"chat_id": ADMIN_CHAT_ID, "text": post_text,
+                                "parse_mode": "HTML", "reply_markup": reply_markup}, timeout=30)
     return True
 
 def approve_and_publish(session_id):
@@ -1343,6 +1475,7 @@ def job(auto_publish=False, custom_topic=None):
             send_message(ADMIN_CHAT_ID, "❌ API не ответил после 3 попыток")
             return
         post_text, image_prompt, topic, format_type = r
+        print(f"[DEBUG] Текст поста: {len(post_text)} символов", flush=True)
         image_path = generate_image_strict(image_prompt, max_attempts=3)
         if not image_path:
             if auto_publish: publish_text_only(post_text)
@@ -1432,7 +1565,6 @@ threading.Thread(target=keep_alive, daemon=True).start()
 threading.Thread(target=poll_updates, daemon=True).start()
 
 # ======================== РАСПИСАНИЕ =========================
-# 6 генераций для МОДЕРАЦИИ (UTC = МСК - 3)
 schedule.every().day.at("07:00").do(lambda: job(auto_publish=False))   # 10:00 МСК
 schedule.every().day.at("10:00").do(lambda: job(auto_publish=False))   # 13:00 МСК
 schedule.every().day.at("13:00").do(lambda: job(auto_publish=False))   # 16:00 МСК
@@ -1440,33 +1572,21 @@ schedule.every().day.at("15:30").do(lambda: job(auto_publish=False))   # 18:30 �
 schedule.every().day.at("18:00").do(lambda: job(auto_publish=False))   # 21:00 МСК
 schedule.every().day.at("18:30").do(lambda: job(auto_publish=False))   # 21:30 МСК
 
-# ☀️ УТРО: сначала приветствие, потом дайджест
 schedule.every().day.at("04:30").do(send_morning_greeting)   # 07:30 МСК
 schedule.every().day.at("05:00").do(morning_digest)          # 08:00 МСК
-
-# 🌙 ВЕЧЕР: сначала последний пост, потом спокойной ночи
 schedule.every().day.at("19:30").do(send_evening_greeting)   # 22:30 МСК
 
-# Срочные проверки сенсаций
-schedule.every().day.at("02:00").do(check_urgent_viral)      # 05:00 МСК
-schedule.every().day.at("08:00").do(check_urgent_viral)      # 11:00 МСК
-schedule.every().day.at("14:00").do(check_urgent_viral)      # 17:00 МСК
-schedule.every().day.at("20:00").do(check_urgent_viral)      # 23:00 МСК
+schedule.every().day.at("02:00").do(check_urgent_viral)
+schedule.every().day.at("08:00").do(check_urgent_viral)
+schedule.every().day.at("14:00").do(check_urgent_viral)
+schedule.every().day.at("20:00").do(check_urgent_viral)
 
-# Вирусная новость недели (вт и пт)
-schedule.every().tuesday.at("09:00").do(generate_viral_post)   # 12:00 МСК
-schedule.every().friday.at("09:00").do(generate_viral_post)    # 12:00 МСК
+schedule.every().tuesday.at("09:00").do(generate_viral_post)
+schedule.every().friday.at("09:00").do(generate_viral_post)
+schedule.every().sunday.at("16:00").do(weekly_poll)
+schedule.every().friday.at("13:00").do(friday_meme)
+schedule.every().wednesday.at("11:00").do(ai_killed_series)
 
-# Опрос «Абсурд недели» (вс)
-schedule.every().sunday.at("16:00").do(weekly_poll)          # 19:00 МСК
-
-# Мем-пятница
-schedule.every().friday.at("13:00").do(friday_meme)          # 16:00 МСК
-
-# Серия «Кого убил ИИ» (ср)
-schedule.every().wednesday.at("11:00").do(ai_killed_series)  # 14:00 МСК
-
-# Аналитика и служебное
 schedule.every().sunday.at("17:00").do(weekly_report)
 schedule.every().sunday.at("17:00").do(digest_job)
 schedule.every().day.at("03:00").do(backup_db)
@@ -1476,7 +1596,7 @@ print("=" * 50, flush=True)
 print("🚀 Бот запущен!", flush=True)
 print(f"Провайдер: {API_PROVIDER}, Модель: {MODEL_NAME}", flush=True)
 print("Генерация: 10:00, 13:00, 16:00, 18:30, 21:00, 21:30 МСК", flush=True)
-print("☀️ 07:30 приветствие → 08:00 дайджест (без 'Доброе утро')", flush=True)
+print("☀️ 07:30 приветствие → 08:00 дайджест", flush=True)
 print("🌙 22:30 спокойной ночи", flush=True)
 print("🔥 Вирусные: вт/пт 12:00 | 😂 Мем: пт 16:00 | 🤖 ИИ: ср 14:00 | 🗳 Опрос: вс 19:00", flush=True)
 print(f"Unsplash: {'подключён' if UNSPLASH_ACCESS_KEY else 'не подключён'}", flush=True)
