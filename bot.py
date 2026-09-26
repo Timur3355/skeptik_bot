@@ -69,7 +69,38 @@ if not MODEL_NAME:
     MODEL_NAME = API_DEFAULT_MODEL
 
 # ======================== RSS ИСТОЧНИКИ =========================
-RSS_URLS = [
+# 🇷🇺 РОССИЯ + 🇰🇿 СНГ — 70% контента
+RUS_RSS_URLS = [
+    # Россия — главные
+    "https://ria.ru/export/rss2/archive/index.xml",
+    "https://tass.ru/rss/v2.xml",
+    "https://www.rbc.ru/rss/",
+    "https://lenta.ru/rss/news",
+    "https://www.kommersant.ru/RSS/news.xml",
+    "https://iz.ru/xml/rss/all.xml",
+    "https://www.gazeta.ru/export/rss/lenta.xml",
+    "https://russian.rt.com/rss",
+    "https://www.vedomosti.ru/rss/news",
+    "https://mir24.tv/rss",
+    # Казахстан
+    "https://tengrinews.kz/news.rss",
+    "https://www.zakon.kz/rss",
+    # Беларусь
+    "https://www.belta.by/rss",
+    # Узбекистан
+    "https://kun.uz/rss/news",
+    # Азербайджан
+    "https://news.day.az/rss.xml",
+    # Армения
+    "https://news.am/rus/rss/news.xml",
+    # Киргизия
+    "https://24.kg/rss/",
+    # Таджикистан
+    "https://asiaplustj.info/ru/rss",
+]
+
+# 🌍 ОСТАЛЬНОЙ МИР — 30% контента
+WORLD_RSS_URLS = [
     "https://feeds.bbci.co.uk/news/world/rss.xml",
     "https://feeds.bbci.co.uk/news/business/rss.xml",
     "https://www.theguardian.com/world/rss",
@@ -80,19 +111,27 @@ RSS_URLS = [
     "https://www.theverge.com/rss/index.xml",
     "https://news.ycombinator.com/rss",
     "https://www.reddit.com/r/nottheonion/.rss",
-    "https://www.rbc.ru/rss/",
-    "https://lenta.ru/rss/news",
-    "https://www.kommersant.ru/RSS/news.xml",
 ]
 
+# Общий список для совместимости
+RSS_URLS = RUS_RSS_URLS + WORLD_RSS_URLS
+
 VIRAL_POSITIVE_KEYWORDS = [
+    # English
     "absurd", "shocking", "bizarre", "weird", "fail", "scandal", "outrage",
     "ridiculous", "hilarious", "embarrassing", "billion", "million",
     "lawsuit", "fired", "resigned", "leaked", "hacked", "crashed",
     "ban", "banned", "refused", "denied", "clashed", "insult",
     "weirdest", "strangest", "caught", "exposed", "scam", "fraud",
+    # Русские — общие
     "абсурд", "скандал", "провал", "утечка", "уволили", "штраф",
     "запрет", "обвинили", "разоблачили", "сократили", "упал", "взорвал",
+    # Русские — Россия/СНГ фокус
+    "трагедия", "катастрофа", "авария", "происшествие", "военные",
+    "учения", "мчс", "погибли", "пострадали", "взрыв", "пожар",
+    "теракт", "атака", "министр", "чиновник", "коррупция", "суд",
+    "приговор", "санкции", "закон", "госдума", "кремль", "правительство",
+    "срочно", "чп", "погиб", "ранен", "обстрел", "дрон", "бпла",
 ]
 
 VIRAL_NEGATIVE_KEYWORDS = [
@@ -144,16 +183,17 @@ def init_db():
                 used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
             default_prompt = (
                 "Ты — автор юмористического новостного канала.\n"
-                "Канал публикует СВЕЖИЕ мировые новости в саркастично-шутливом формате: бизнес, технологии, экономика, стартапы, крупные компании, знаменитости, абсурдные события по всему миру.\n"
-                "Фокус — новости со всего мира (США, Европа, Азия, Россия — все регионы), главное чтобы они были СВЕЖИМИ (последние 1–3 дня).\n"
+                "ВАЖНО: 70% постов — новости РОССИИ и СНГ (Казахстан, Беларусь, Узбекистан, Азербайджан, Армения, Киргизия, Таджикистан). "
+                "30% — остальной мир (США, Европа, Азия).\n"
+                "Канал публикует СВЕЖИЕ новости в саркастично-шутливом формате: политика, происшествия, экономика, бизнес, технологии, "
+                "военные учения, ЧП, скандалы, абсурдные события.\n"
                 "Стиль: дерзкий, ироничный, с шутками и неожиданными сравнениями. Пиши так, будто рассказываешь другу смешную новость за кофе.\n"
                 "ОБЯЗАТЕЛЬНО используй эмодзи в каждом абзаце (минимум 3–4 разных).\n"
                 "Начинай пост с яркого заголовка с эмодзи.\n"
                 "Добавляй ёмкие шутки, сарказм и неожиданные метафоры (например, 'нейросеть? нет, ночная смена').\n"
                 "Структура: заголовок → суть новости → развитие сюжета с шутками → неожиданный поворот или финальная ирония.\n"
                 "СВЕРХВАЖНО ПРО ДЛИНУ: пост должен быть РОВНО 700–900 символов, НИКОГДА не превышай 950 символов. "
-                "Это 3 абзаца по 2–3 коротких предложения. Пиши плотно, без воды, без повторов, без пересказа одного и того же. "
-                "Если не укладываешься — сокращай шутки, но не теряй смысл. Лучше короче, чем длиннее. "
+                "Это 3 абзаца по 2–3 коротких предложения. Пиши плотно, без воды, без повторов. "
                 "ЗАПРЕЩЕНО писать больше 950 символов. Тексты длиннее будут обрезаны автоматически. ОБЯЗАТЕЛЬНО заканчивай точкой, восклицанием или вопросом.\n"
                 "НЕ ДЕЛАЙ блок 'вывод' или 'Action Item' — просто заканчивай пост сильной шуткой или ироничным наблюдением.\n"
                 "Не используй шаблонные фразы, будь оригинальным.\n"
@@ -199,16 +239,17 @@ def init_db():
             used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
         default_prompt_sqlite = (
             "Ты — автор юмористического новостного канала.\n"
-            "Канал публикует СВЕЖИЕ мировые новости в саркастично-шутливом формате: бизнес, технологии, экономика, стартапы, крупные компании, знаменитости, абсурдные события по всему миру.\n"
-            "Фокус — новости со всего мира (США, Европа, Азия, Россия — все регионы), главное чтобы они были СВЕЖИМИ (последние 1–3 дня).\n"
+            "ВАЖНО: 70% постов — новости РОССИИ и СНГ (Казахстан, Беларусь, Узбекистан, Азербайджан, Армения, Киргизия, Таджикистан). "
+            "30% — остальной мир (США, Европа, Азия).\n"
+            "Канал публикует СВЕЖИЕ новости в саркастично-шутливом формате: политика, происшествия, экономика, бизнес, технологии, "
+            "военные учения, ЧП, скандалы, абсурдные события.\n"
             "Стиль: дерзкий, ироничный, с шутками и неожиданными сравнениями. Пиши так, будто рассказываешь другу смешную новость за кофе.\n"
             "ОБЯЗАТЕЛЬНО используй эмодзи в каждом абзаце (минимум 3–4 разных).\n"
             "Начинай пост с яркого заголовка с эмодзи.\n"
             "Добавляй ёмкие шутки, сарказм и неожиданные метафоры (например, 'нейросеть? нет, ночная смена').\n"
             "Структура: заголовок → суть новости → развитие сюжета с шутками → неожиданный поворот или финальная ирония.\n"
             "СВЕРХВАЖНО ПРО ДЛИНУ: пост должен быть РОВНО 700–900 символов, НИКОГДА не превышай 950 символов. "
-            "Это 3 абзаца по 2–3 коротких предложения. Пиши плотно, без воды, без повторов, без пересказа одного и того же. "
-            "Если не укладываешься — сокращай шутки, но не теряй смысл. Лучше короче, чем длиннее. "
+            "Это 3 абзаца по 2–3 коротких предложения. Пиши плотно, без воды, без повторов. "
             "ЗАПРЕЩЕНО писать больше 950 символов. Тексты длиннее будут обрезаны автоматически. ОБЯЗАТЕЛЬНО заканчивай точкой, восклицанием или вопросом.\n"
             "НЕ ДЕЛАЙ блок 'вывод' или 'Action Item' — просто заканчивай пост сильной шуткой или ироничным наблюдением.\n"
             "Не используй шаблонные фразы, будь оригинальным.\n"
@@ -336,7 +377,6 @@ def trim_post_text(text, max_len=950):
     if len(text) <= max_len:
         return text
 
-    # 1. Отделяем хвост (источник + хештеги)
     tail = ""
     hashtag_match = re.search(r'(\n*((?:#\w+\s*)+))\s*$', text)
     hashtags_block = ""
@@ -365,7 +405,6 @@ def trim_post_text(text, max_len=950):
         tail = "\n\n" + hashtags_block if hashtags_block else ""
         body_limit = max_len - len(tail) - 3
 
-    # 2. Пробуем резать по абзацам
     paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
     if len(paragraphs) > 1:
         result = ""
@@ -377,7 +416,6 @@ def trim_post_text(text, max_len=950):
         if result and len(result) >= body_limit * 0.7:
             return result + tail
 
-    # 3. Режем по предложениям
     sentences = re.split(r'(?<=[.!?…])\s+', text)
     sentences = [s.strip() for s in sentences if s.strip()]
     result = ""
@@ -391,7 +429,6 @@ def trim_post_text(text, max_len=950):
             return result + tail
         return result.rstrip(' .,;:') + "…" + tail
 
-    # 4. Режем по запятым
     if not result:
         parts = re.split(r'(?<=,)\s+', text)
         for p in parts:
@@ -400,7 +437,6 @@ def trim_post_text(text, max_len=950):
                 break
             result = candidate
 
-    # 5. Крайний случай: по словам
     if not result or len(result) < body_limit * 0.4:
         words = text.split()
         result = ""
@@ -411,7 +447,6 @@ def trim_post_text(text, max_len=950):
             result = candidate
         result = result.rstrip(' .,;:')
 
-    # 6. Финальная зачистка
     result = result.rstrip()
     if result and result[-1] not in '.!?…':
         result = result.rstrip(' .,;:—–-') + "…"
@@ -442,12 +477,10 @@ def shorten_post_with_ai(text, target_len=900):
 def finalize_post(text, target_len=950):
     """Финальная обработка: сокращение через AI + умная обрезка."""
     text = beautify_post(text)
-    # Если текст превышает целевой лимит — сначала пробуем умное сокращение через AI
     if len(text) > target_len:
         print(f"[FINALIZE] Текст {len(text)} симв. — сокращаю через AI", flush=True)
         text = shorten_post_with_ai(text, target_len=target_len - 30)
         text = beautify_post(text)
-    # Страховка: если всё равно длинный — умная обрезка
     if len(text) > target_len:
         print(f"[FINALIZE] Всё ещё {len(text)} — применяю trim_post_text", flush=True)
         text = trim_post_text(text, max_len=target_len)
@@ -523,6 +556,16 @@ def clean_poll_text(text, max_len=95):
     if len(text) > max_len:
         text = text[:max_len-3].rstrip() + "..."
     return text
+
+# ======================== ВЫБОР ПУЛА ИСТОЧНИКОВ =========================
+def pick_news_pool():
+    """70% — Россия+СНГ, 30% — мир."""
+    if random.random() < 0.7:
+        print("[POOL] 🇷🇺 Россия+СНГ (70%)", flush=True)
+        return RUS_RSS_URLS
+    else:
+        print("[POOL] 🌍 Мир (30%)", flush=True)
+        return WORLD_RSS_URLS
 
 # ======================== ЗАЩИТА ОТ ПОВТОРОВ КАРТИНОК =========================
 def is_image_used(image_id):
@@ -639,8 +682,10 @@ def generate_image_strict(prompt, max_attempts=4):
 
 # ======================== СВЕЖАЯ НОВОСТЬ =========================
 def get_fresh_news_for_post():
+    """Собирает свежие новости из выбранного пула (70% РФ/СНГ, 30% мир)."""
+    pool = pick_news_pool()
     candidates = []
-    for url in RSS_URLS:
+    for url in pool:
         try:
             feed = feedparser.parse(url)
             for entry in feed.entries[:15]:
@@ -666,6 +711,19 @@ def get_fresh_news_for_post():
         except Exception as e:
             print(f"[NEWS] RSS {url}: {e}", flush=True)
 
+    # Если выбранный пул пуст — пробуем другой
+    if not candidates:
+        other_pool = WORLD_RSS_URLS if pool is RUS_RSS_URLS else RUS_RSS_URLS
+        for url in other_pool:
+            try:
+                feed = feedparser.parse(url)
+                for entry in feed.entries[:10]:
+                    title = entry.title.strip()
+                    summary = re.sub(r'<[^>]+>', '', entry.get('summary', ''))[:250]
+                    if len(title) >= 20:
+                        candidates.append({'title': title, 'summary': summary})
+            except: continue
+
     if not candidates:
         return None
 
@@ -681,8 +739,8 @@ def get_fresh_news_for_post():
             recent_titles.add(t[:40])
 
     fresh = [c for c in candidates if c['title'].lower()[:40] not in recent_titles]
-    pool = fresh if fresh else candidates
-    chosen = random.choice(pool)
+    final_pool = fresh if fresh else candidates
+    chosen = random.choice(final_pool)
     print(f"[NEWS] Выбрана: {chosen['title'][:80]}", flush=True)
     return f"{chosen['title']}. {chosen['summary']}"
 
@@ -693,7 +751,7 @@ def generate_post(custom_topic=None):
     else:
         topic = get_fresh_news_for_post()
         if not topic:
-            topic = "самая свежая абсурдная новость из мира за последние сутки"
+            topic = "самая свежая новость из России или СНГ за последние сутки"
 
     format_type = POST_FORMATS.get(datetime.now().weekday(), "новость")
     system_prompt = get_prompt()
@@ -745,8 +803,9 @@ def generate_post(custom_topic=None):
 # ======================== ВИРУСНЫЙ ДЕТЕКТОР =========================
 def find_viral_news():
     print("[VIRAL] Сканирую...", flush=True)
+    pool = pick_news_pool()
     candidates = []
-    for url in RSS_URLS:
+    for url in pool:
         try:
             feed = feedparser.parse(url)
             for e in feed.entries[:15]:
@@ -758,7 +817,7 @@ def find_viral_news():
                     if kw in low: score += 2
                 for kw in VIRAL_NEGATIVE_KEYWORDS:
                     if kw in low: score -= 3
-                if re.search(r'\$?\d+\s*(billion|million|млрд|млн)', low): score += 3
+                if re.search(r'\$?\d+\s*(billion|million|млрд|млн|тыс)', low): score += 3
                 if '"' in title or '«' in title: score += 2
                 if score >= 4:
                     candidates.append({'title': title, 'summary': summary, 'score': score})
@@ -775,7 +834,8 @@ def generate_viral_post():
         send_message(ADMIN_CHAT_ID, "😔 Вирусных новостей не нашлось.")
         return None
     prompt = (
-        "Ты — автор юмористического новостного канала, специализирующийся на САМЫХ АБСУРДНЫХ мировых новостях.\n"
+        "Ты — автор юмористического новостного канала, специализирующийся на САМЫХ АБСУРДНЫХ новостях.\n"
+        "Приоритет — новости России и СНГ, но если новость мировая — тоже ок.\n"
         "Стиль: дерзкий, ироничный, с неожиданными метафорами.\n"
         "Структура: яркий заголовок с эмодзи → суть → развитие с сарказмом → финальная ирония.\n"
         "НЕ ДЕЛАЙ вывод. Эмодзи в каждом абзаце. Ключевые цифры — <b>...</b>.\n"
@@ -850,8 +910,9 @@ def check_urgent_viral():
 # ======================== УТРЕННИЙ ДАЙДЖЕСТ =========================
 def morning_digest():
     print("[DIGEST] Собираю...", flush=True)
+    pool = pick_news_pool()
     news_list = []
-    for url in RSS_URLS[:8]:
+    for url in pool[:10]:
         try:
             feed = feedparser.parse(url)
             for e in feed.entries[:8]:
@@ -864,7 +925,7 @@ def morning_digest():
                     if kw in low: score += 2
                 for kw in VIRAL_NEGATIVE_KEYWORDS:
                     if kw in low: score -= 2
-                if re.search(r'\$?\d+\s*(billion|million|млрд|млн)', low): score += 3
+                if re.search(r'\$?\d+\s*(billion|million|млрд|млн|тыс)', low): score += 3
                 news_list.append({'title': title, 'summary': summary, 'score': score})
         except Exception as e:
             print(f"[DIGEST] RSS {url}: {e}", flush=True)
@@ -920,8 +981,9 @@ def morning_digest():
 # ======================== ОПРОС НЕДЕЛИ =========================
 def weekly_poll():
     print("[POLL] Создаю...", flush=True)
+    pool = pick_news_pool()
     candidates = []
-    for url in RSS_URLS[:10]:
+    for url in pool[:12]:
         try:
             feed = feedparser.parse(url)
             for e in feed.entries[:10]:
@@ -1039,6 +1101,7 @@ def ai_killed_series():
     prompt = (
         "Ты — автор юмористического канала. Рубрика 'Кого убил ИИ'.\n"
         "Каждый выпуск — про одну профессию, которую ИИ вытеснил.\n"
+        "Приводи примеры из России и мира.\n"
         "Формат: заголовок '🤖 Кого убил ИИ. Выпуск N: [Профессия]'.\n"
         "2-3 абзаца — что случилось, реальные примеры, шутка.\n"
         "Финал — саркастичная мысль про следующую жертву.\n"
@@ -1205,7 +1268,6 @@ def send_for_approval(post_text, image_path, image_prompt, session_id, topic, fo
         )
         if r.status_code != 200:
             print(f"[APPROVAL] sendPhoto не прошёл: {r.text[:200]}", flush=True)
-            # fallback: фото отдельно, текст отдельно
             requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
                           files={"photo": open(image_path, "rb")},
                           data={"chat_id": ADMIN_CHAT_ID}, timeout=30)
@@ -1595,6 +1657,7 @@ schedule.every().day.at("01:00").do(update_post_stats)
 print("=" * 50, flush=True)
 print("🚀 Бот запущен!", flush=True)
 print(f"Провайдер: {API_PROVIDER}, Модель: {MODEL_NAME}", flush=True)
+print(f"📰 Источники: {len(RUS_RSS_URLS)} РФ/СНГ (70%) + {len(WORLD_RSS_URLS)} мир (30%)", flush=True)
 print("Генерация: 10:00, 13:00, 16:00, 18:30, 21:00, 21:30 МСК", flush=True)
 print("☀️ 07:30 приветствие → 08:00 дайджест", flush=True)
 print("🌙 22:30 спокойной ночи", flush=True)
